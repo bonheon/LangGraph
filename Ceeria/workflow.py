@@ -41,6 +41,9 @@ class GraphState(GaiaGraphState):
     chat_upload_retrieved_docs: Optional[List] = Field(default=[])
     retrieved_docs: Optional[List] = Field(default=[])
 
+    intent: Optional[str] = Field(default=None)
+    query_type: Optional[str] = Field(default=None)
+
     is_eqp: bool = False
     is_lot: bool = False
     eqp_id: Optional[str] = None
@@ -941,9 +944,13 @@ def chat_upload_retrieve_documents(state: GraphState) -> GraphState:
     state.chat_upload_retrieved_docs = docs
     return state
 
-#### 5. 노드 및 실행(핵심)
 
-def classify_and_execute(state: GraphState) -> GraphState:
+# ============================================================
+# 노드 1: 질문 분류 (의도 파악만 담당 - API 호출 최소화)
+# ============================================================
+
+def classify(state: GraphState) -> GraphState:
+    """질문을 분석해 intent와 필요한 파라미터를 state에 저장한다."""
     query = state.query
     query_lower = query.lower()
     query_upper = query.upper()
@@ -953,268 +960,293 @@ def classify_and_execute(state: GraphState) -> GraphState:
     print(f"\n[DEBUG] ============")
 
     candidate = extract_candidate(query)
-
-    ## lot 판별
     print(f"[DEBUG] 추출된 후보 : {candidate}")
 
-    is_lot = False
-
+    # 1단계: LOT 판별
     if candidate:
         print(f"[DEBUG] call_lotid 호출 : {candidate}")
         lot_data = call_lotid(candidate)
         print(f"[DEBUG] call_lotid 결과 : {lot_data}")
+
         if lot_data:
-            is_lot = True
             state.is_lot = True
             state.lot_id = candidate
+            state.query_type = "sql_api"
             print(f"[DEBUG] LOT 확인 됨 : {candidate}")
+
+            setmo_keywords = ['셋모', 'setmo', 'setmonitor', 'set monitoring', 'set-monitoring', '계측', 's/m', 's.m', 'set monitoring']
+            hold_keywords = ['f/h', 'f.h', 'fh', 'future action', 'future hold', '퓨처홀드', '퓨처 홀드', '퓨처홀드']
+            slot_keywords = ['슬롯', 'slot', '랏정보', 'lot 정보', '정보', '상태', '어디', '위치', '공정']
+            his_keywords = ['이력']
+
+            if any(k in query_lower for k in setmo_keywords):
+                print("[DEBUG] -> SETMO Monitor 의도 확인")
+                state.intent = "setmonitoring"
+            elif any(k in query_lower for k in hold_keywords):
+                print("[DEBUG] -> Future Hold 의도 확인")
+                state.intent = "future_action"
+            elif any(k in query_lower for k in slot_keywords):
+                print("[DEBUG] -> Slot Info 의도 확인")
+                state.intent = "lot_info"
+            elif any(k in query_lower for k in his_keywords):
+                print("[DEBUG] -> LOT 이력 조회 의도 확인")
+                state.intent = "lot_his"
+            else:
+                print("[DEBUG] -> 키워드 없음, 기본 LOT 이력 조회")
+                state.intent = "lot_his"
+
+            return state
         else:
             print(f"[DEBUG] LOT 아님: {candidate}")
 
-    if is_lot:
-        print("[DEBUG] LOT -> SETMO/Slot 키워드 판별")
+    # 2단계: 장비 판별
+    print("[DEBUG] LOT 아님 -> 2단계 진행")
+    eqp_candidate = candidate
+    print(f"[DEBUG] 장비 후보 : {eqp_candidate}, FAB 힌트 : {extract_fab(query_upper) or '없음'}")
 
-        setmo_monitor_keywords = ['셋모', 'setmo', 'setmonitor', 'set monitoring', 'set-monitoring', '계측', 's/m', 's.m', 'set monitoring']
+    if eqp_candidate:
+        try:
+            eq_check = call_eq(eqp_candidate)
+        except Exception as e:
+            print(f"[DEBUG] call eq 실패: {e}")
+            eq_check = None
 
-        if any(k in query_lower for k in setmo_monitor_keywords):
-            print("[DEBUG] -> SETMO Monitor 의도 확인")
-            state.query_type = "sql_api"
-            state.intent = "setmonitoring"
+        if eq_check and len(eq_check) > 0:
+            actual_fab = eq_check[0].get("FAC_ID") or eq_check[0].get("SRC")
+            print(f"[DEBUG] call_eq 결과 : {eqp_candidate} in {actual_fab}")
 
-            data = call_setmo_check(state.lot_id)
-            if data and any(d.get('ACT_NM') == 'Monitor' for d in data):
-                state.answer = format_setmo_data(data, state.lot_id, "Monitor")
+            print(f"[DEBUG] {actual_fab} 상세 API 조회")
+            eqp_data = get_eqp_by_fab(actual_fab, eqp_candidate)
+
+            if eqp_data:
+                print(f"[DEBUG] 상세 조회 성공: {len(eqp_data)}건")
+                state.is_eqp = True
+                state.eqp_id = eqp_candidate
+                state.eqp_data = eqp_data
+                state.fab = actual_fab
+                state.query_type = "sql_api"
+
+                info_keywords = ['장비정보', '장비 정보', 'equipment info', 'eqp info', '정보']
+                if any(k in query_lower for k in info_keywords):
+                    print("[DEBUG] -> 장비 정보 의도 확인")
+                    state.intent = "eqp_info"
+                else:
+                    print("[DEBUG] -> 장비 상태 의도 확인 (기본값)")
+                    state.intent = "eqp_status"
+
+                return state
             else:
-                state.answer = f"{state.lot_id} setmonitor 데이터 없음"
-            state.skip_rag = True
-            print(f"[DEBUG] 응답완료 (skip_rag=True)")
-            return state
-
-        hold_keywords = ['f/h', 'f.h', 'fh', 'future action', 'future hold', '퓨처홀드', '퓨처 홀드', '퓨처홀드']
-
-        if any(k in query_lower for k in hold_keywords):
-            print("[DEBUG] -> future Hold 의도 확인")
-            state.query_type = "sql_api"
-            state.intent = "future_action"
-
-            data = call_setmo_check(state.lot_id)
-            if data and any(d.get('ACT_NM') == 'makeOnHold' for d in data):
-                state.answer = format_setmo_data(data, state.lot_id, "makeOnHold")
-            else:
-                state.answer = f"{state.lot_id} Future Hold 데이터 없음"
-            state.skip_rag = True
-            print(f"[DEBUG] 응답완료(skip_rag = True)")
-            return state
-
-        slot_keywords = ['슬롯', 'slot', '랏정보', 'lot 정보', '정보', '상태', '어디', '위치', '공정']
-        if any(k in query_lower for k in slot_keywords):
-            print("[DEBUG] -> Slot Info 의도 확인")
-            state.query_type = "sql_api"
-            state.intent = "lot_info"
-
-            data = call_slot_info(state.lot_id)
-            if data:
-                state.answer = format_slot_data(data, state.lot_id)
-            else:
-                state.answer = f"{state.lot_id} 슬롯 정보 없음"
-            state.skip_rag = True
-            print(f"[DEBUG] 응답 완료 (skip_rag=True)")
-
-        his_keywords = ['이력']
-        if any(k in query_lower for k in his_keywords):
-            print("[DEBUG] -> LOT 이력 조회 의도 확인")
-            state.query_type = "sql_api"
-            state.intent = "lot_his"
-
-            data = call_lothis(state.lot_id)
-            if data:
-                state.answer = format_lothis_data(data, state.lot_id)
-            else:
-                state.answer = f"{state.lot_id} 이력 정보 없음"
-            state.skip_rag = True
-            print(f"[DEBUG] 응답완료 (skip_rag = True)")
-
-        print("[DEBUG] -> 키워드 없음, 기본 LOT 이력 조회")
-        state.query_type = "sql_api"
-        state.intent = "lot_his"
-
-        data = call_lothis(state.lot_id)
-        if data:
-            state.answer = format_lothis_data(data, state.lot_id)
+                print(f"[DEBUG] 상세 조회 실패 : {actual_fab} {eqp_candidate}")
         else:
-            state.answer = f"{state.lot_id} 이력 정보 없음"
-        state.skip_rag = True
-        print(f"[DEBUG] 응답 완료 (skip_rag = True)")
+            print(f"[DEBUG] 장비 아님: {eqp_candidate}")
+
+    # 3단계: FAB+MODEL 판별
+    print("[DEBUG] 3 단계: FAB+MODEL 판별 시도")
+    fab_model_query = parse_fab_model_query(query)
+    print(f"[DEBUG] parse_fab_model_query 결과 : {fab_model_query}")
+
+    if fab_model_query:
+        state.fab = fab_model_query["fab"]
+        state.section_grp_nm = fab_model_query.get("section_grp_nm")
+        state.fab_model = fab_model_query.get("model")
+        state.fab_proc_model = fab_model_query.get("proc_model")
+        state.fab_vendor = fab_model_query.get("vendor")
+        state.fab_area = fab_model_query.get("area")
+        state.fab_keyword = fab_model_query.get("keywords", [])
+        state.fab_group_by = fab_model_query.get("group_by")
+        state.fab_aggregate = fab_model_query.get("aggregate", "list")
+        state.fab_chamber_only = fab_model_query.get("chamber_only", False)
+        state.intent = "fab_model_query"
+        state.query_type = "sql_api"
         return state
 
-    else:
-        print("[DEBUG] LOT 아님 -> 2단계 진행")
+    # 4단계: OPER_STEP 판별
+    print("[DEBUG] 3.5 단계: OPER_STEP 판별 시도 (구조화된 파싱)")
+    oper_query_info = parse_operation_query(query)
 
-        #==========장비 판별============
-        hint_fab = extract_fab(query_upper)
-        eqp_candidate = candidate
-        print(f"[DEBUG] 장비 후보 : {eqp_candidate}, FAB 힌트 : {hint_fab or '없음'}")
+    if oper_query_info:
+        lot_cd = oper_query_info.get("lot_cd")
+        ctn_candidate = oper_query_info.get("ctn_desc_candidate")
+        is_prev = oper_query_info.get("is_prev", False)
+        print(f"[DEBUG] 파싱 결과 - LOT_CD : {lot_cd}, CTN_CANDIDATE: {ctn_candidate}, PREV: {is_prev}")
 
-        if eqp_candidate:
-            try:
-                eq_check = call_eq(eqp_candidate)
-            except Exception as e:
-                print(f"[DEBUG] call eq 실패: {e}")
-                eq_check = None
-
-            if eq_check and len(eq_check) > 0:
-                actual_fab = eq_check[0].get("FAC_ID") or eq_check[0].get("SRC")
-                print(f"[DEBUG] call_eq 결과 : {eqp_candidate} in {actual_fab}")
-
-                print(f"[DEBUG] {actual_fab} 상세 API 조회")
-                eqp_data = get_eqp_by_fab(actual_fab, eqp_candidate)
-
-                if eqp_data:
-                    print(f"[DEBUG] 상세 조회 성공: {len(eqp_data)}건")
-                    state.is_eqp = True
-                    state.eqp_id = eqp_candidate
-                    state.eqp_data = eqp_data
-                    state.fab = actual_fab
-
-                    is_cmp = any("CMP" in str(d.get("MGMT_AREA_ID", "")).upper() for d in eqp_data)
-                    print(f"[DEBUG] CMP 장비 여부 : {is_cmp}")
-
-                    info_keywords = ['장비정보', '장비 정보', 'equipment info', 'eqp info', '정보']
-                    status_keywords = ['장비상태', '장비 상태', '설비상태', '설비 상태', '상태', 'down', 'up', '다운']
-
-                    if any(k in query_lower for k in info_keywords):
-                        print("[DEBUG] -> 장비 정보 의도 확인")
-                        state.intent = "eqp_info"
-                        analyzed = analyze_eqp_data(eqp_data, eqp_candidate)
-                        state.answer = format_eqp_info_table(analyzed)
-
-                    elif any(k in query_lower for k in status_keywords):
-                        print("[DEBUG] -> 장비 상태 의도 확인")
-                        state.intent = "eqp_status"
-                        analyzed = analyze_eqp_data(eqp_data, eqp_candidate)
-                        state.answer = format_eqp_status_table(
-                            analyzed,
-                            show_chamber=not is_cmp,
-                            show_port=True
-                        )
-
-                    else:
-                        print("[DEBUG] -> 키워드 없음, 기본 장비 상태")
-                        state.intent = "eqp_status"
-                        analyzed = analyze_eqp_data(eqp_data, eqp_candidate)
-                        state.answer = format_eqp_status_table(
-                            analyzed,
-                            show_chamber=not is_cmp,
-                            show_port=True
-                        )
-
-                    state.query_type = "sql_api"
-                    state.skip_rag = True
-                    print(f"[DEBUG] 응답 완료 (skip_rag = True)")
-                    return state
-
-                else:
-                    print(f"[DEBUG] 상세 조회 실패 : {actual_fab} {eqp_candidate}")
-
-            else:
-                print(f"[DEBUG] 장비 아님: {eqp_candidate}")
-
-        #==============FAB+MODEL 판별 ===============
-        print("[DEBUG] 3 단계: FAB+MODEL 판별 시도")
-
-        fab_model_query = parse_fab_model_query(query)
-        print(f"[DEBUG] parse_fab_model_query 결과 : {fab_model_query}")
-
-        if fab_model_query:
-            fab = fab_model_query["fab"]
-
-            print(f"[DEBUG] Fetching all equipment for FAB: {fab}")
-            raw_data = get_eqp_by_fab(fab, "*")
-
-            if not raw_data:
-                state.answer = f"{fab} 펩에 등록된 장비 데이터가 없습니다."
-                return state
-
-            filtered_data = apply_filters(raw_data, fab_model_query)
-
-            state.fab = fab_model_query["fab"]
-            state.section_grp_nm = fab_model_query.get("section_grp_nm")
-            state.fab_model = fab_model_query.get("model")
-            state.fab_proc_model = fab_model_query.get("proc_model")
-            state.vendor = fab_model_query.get("vendor")
-            state.area = fab_model_query.get("area")
-            state.keywords = fab_model_query.get("keywords", [])
-            state.group_by = fab_model_query.get("group_by")
-            state.aggregate = fab_model_query.get("aggregate", "list")
-            state.fab_chamber_only = fab_model_query.get("chamber_only", False)
-
-            if not filtered_data:
-                conditions = []
-                if fab_model_query.get("model"): conditions.append(f"모델:{fab_model_query['model']}")
-                if fab_model_query.get("area"): conditions.append(f"구역:{fab_model_query['area']}")
-                if fab_model_query.get("section_grp_nm"): conditions.append(f"섹션:{fab_model_query['section_grp_nm']}")
-                state.answer = f"{fab} 펩에서 {', '.join(conditions)} 조건에 맞는 장비를 찾을 수 없습니다."
-
-            else:
-                filtered_data.sort(key=lambda x: x.get('EQP_ID', ''))
-                state.answer = format_fab_model_result(
-                    filtered_data,
-                    fab_model_query,
-                    query,
-                )
-
+        if ctn_candidate:
+            state.parsed_lot_cd = lot_cd
+            state.parsed_ctn_desc = ctn_candidate
+            state.parsed_is_prev = is_prev
+            state.intent = "oper_step"
             state.query_type = "sql_api"
-            state.intent = "fab_model_query"
-            state.skip_rag = True
-            state.sql_result = raw_data
-            print(f"[DEBUG] 응답 완료 (skip_rag=True)")
             return state
+        else:
+            print(f"[DEBUG] 조건에 맞는 데이터 없음")
 
-        #==========OPER_STEP 분류 =============
-        print("[DEBUG] 3.5 단계: OPER_STEP 판별 시도 (구조화된 파싱)")
-
-        oper_query_info = parse_operation_query(query)
-
-        if oper_query_info:
-            lot_cd = oper_query_info.get("lot_cd")
-            ctn_candidate = oper_query_info.get("ctn_desc_candidate")
-            is_prev = oper_query_info.get("is_prev", False)
-
-            print(f"[DEBUG] 파싱 결과 - LOT_CD : {lot_cd}, CTN_CANDIDATE: {ctn_candidate}, PREV: {is_prev}")
-
-            oper_data = get_operhis_data(
-                ctn_desc=ctn_candidate,
-                lot_cd=lot_cd,
-                prev=is_prev
-            )
-
-            if oper_data:
-                print(f"[DEBUG] OPER_STEP 데이터 확인됨: {len(oper_data)}건")
-
-                state.query_type = "sql_api"
-                state.intent = "oper_step"
-                state.parsed_ctn_desc = ctn_candidate
-                state.parsed_lot_cd = lot_cd
-                state.parsed_is_prev = is_prev
-
-                state.answer = format_operhis_data(oper_data, ctn_candidate)
-
-                state.skip_rag = True
-                print(f"[DEBUG] 응답 완료 (skip_rag = True)")
-                return state
-            else:
-                print(f"[DEBUG] 조건에 맞는 데이터 없음")
-
-        #===============일반 질문(RAG) ===============
-        print("[DEBUG] 5단계 : 일반 질문(RAG)")
-        state.query_type = "general"
-        state.intent = "general_qa"
-        state.skip_rag = False
-        print(f"[DEBUG] skip_rag=False, 다음 노드로 진행")
-
+    # 5단계: 일반 질문 (RAG)
+    print("[DEBUG] 5단계 : 일반 질문(RAG)")
+    state.intent = "general_qa"
+    state.query_type = "general"
+    state.skip_rag = False
     return state
 
-#6. 노드 : 조건부 문서 검색
+
+# ============================================================
+# 라우팅 함수: intent → 다음 노드 결정
+# ============================================================
+
+def route_by_intent(state: GraphState) -> str:
+    """classify 이후 intent에 따라 실행할 fetch 노드를 반환한다."""
+    intent_map = {
+        "setmonitoring":  "fetch_lot_setmo",
+        "future_action":  "fetch_lot_future_hold",
+        "lot_info":       "fetch_lot_slot",
+        "lot_his":        "fetch_lot_history",
+        "eqp_info":       "fetch_eqp_info",
+        "eqp_status":     "fetch_eqp_status",
+        "fab_model_query":"fetch_fab_model",
+        "oper_step":      "fetch_oper_step",
+    }
+    return intent_map.get(state.intent, "chat_upload_retrieve_documents")
+
+
+# ============================================================
+# 노드 2~5: LOT 관련 fetch 노드
+# ============================================================
+
+def fetch_lot_setmo(state: GraphState) -> GraphState:
+    """LOT SetMonitor 데이터 조회 및 포맷"""
+    data = call_setmo_check(state.lot_id)
+    if data and any(d.get('ACT_NM') == 'Monitor' for d in data):
+        state.answer = format_setmo_data(data, state.lot_id, "Monitor")
+    else:
+        state.answer = f"{state.lot_id} setmonitor 데이터 없음"
+    state.skip_rag = True
+    print(f"[DEBUG] 응답완료 (skip_rag=True)")
+    return state
+
+
+def fetch_lot_future_hold(state: GraphState) -> GraphState:
+    """LOT Future Hold 데이터 조회 및 포맷"""
+    data = call_setmo_check(state.lot_id)
+    if data and any(d.get('ACT_NM') == 'makeOnHold' for d in data):
+        state.answer = format_setmo_data(data, state.lot_id, "makeOnHold")
+    else:
+        state.answer = f"{state.lot_id} Future Hold 데이터 없음"
+    state.skip_rag = True
+    print(f"[DEBUG] 응답완료 (skip_rag=True)")
+    return state
+
+
+def fetch_lot_slot(state: GraphState) -> GraphState:
+    """LOT 슬롯 정보 조회 및 포맷"""
+    data = call_slot_info(state.lot_id)
+    state.answer = format_slot_data(data, state.lot_id) if data else f"{state.lot_id} 슬롯 정보 없음"
+    state.skip_rag = True
+    print(f"[DEBUG] 응답 완료 (skip_rag=True)")
+    return state
+
+
+def fetch_lot_history(state: GraphState) -> GraphState:
+    """LOT 이력 조회 및 포맷"""
+    data = call_lothis(state.lot_id)
+    state.answer = format_lothis_data(data, state.lot_id) if data else f"{state.lot_id} 이력 정보 없음"
+    state.skip_rag = True
+    print(f"[DEBUG] 응답완료 (skip_rag=True)")
+    return state
+
+
+# ============================================================
+# 노드 6~7: 장비(EQP) 관련 fetch 노드
+# ============================================================
+
+def fetch_eqp_info(state: GraphState) -> GraphState:
+    """장비 정보 분석 및 포맷"""
+    analyzed = analyze_eqp_data(state.eqp_data, state.eqp_id)
+    state.answer = format_eqp_info_table(analyzed)
+    state.skip_rag = True
+    print(f"[DEBUG] 응답 완료 (skip_rag=True)")
+    return state
+
+
+def fetch_eqp_status(state: GraphState) -> GraphState:
+    """장비 상태 분석 및 포맷"""
+    is_cmp = any("CMP" in str(d.get("MGMT_AREA_ID", "")).upper() for d in state.eqp_data)
+    analyzed = analyze_eqp_data(state.eqp_data, state.eqp_id)
+    state.answer = format_eqp_status_table(analyzed, show_chamber=not is_cmp, show_port=True)
+    state.skip_rag = True
+    print(f"[DEBUG] 응답 완료 (skip_rag=True)")
+    return state
+
+
+# ============================================================
+# 노드 8: FAB+MODEL 현황 fetch 노드
+# ============================================================
+
+def fetch_fab_model(state: GraphState) -> GraphState:
+    """FAB+MODEL 기준 장비 현황 조회 및 포맷"""
+    fab = state.fab
+    raw_data = get_eqp_by_fab(fab, "*")
+
+    if not raw_data:
+        state.answer = f"{fab} 펩에 등록된 장비 데이터가 없습니다."
+        state.skip_rag = True
+        return state
+
+    query_info = {
+        "fab":           state.fab,
+        "model":         state.fab_model,
+        "proc_model":    state.fab_proc_model,
+        "vendor":        state.fab_vendor,
+        "area":          state.fab_area,
+        "section_grp_nm":state.section_grp_nm,
+        "keywords":      state.fab_keyword or [],
+        "chamber_only":  state.fab_chamber_only,
+        "group_by":      state.fab_group_by,
+        "aggregate":     state.fab_aggregate,
+    }
+
+    filtered_data = apply_filters(raw_data, query_info)
+
+    if not filtered_data:
+        conditions = []
+        if state.fab_model:     conditions.append(f"모델:{state.fab_model}")
+        if state.fab_area:      conditions.append(f"구역:{state.fab_area}")
+        if state.section_grp_nm: conditions.append(f"섹션:{state.section_grp_nm}")
+        state.answer = f"{fab} 펩에서 {', '.join(conditions)} 조건에 맞는 장비를 찾을 수 없습니다."
+    else:
+        filtered_data.sort(key=lambda x: x.get('EQP_ID', ''))
+        state.answer = format_fab_model_result(filtered_data, query_info, state.query)
+
+    state.sql_result = raw_data
+    state.skip_rag = True
+    print(f"[DEBUG] 응답 완료 (skip_rag=True)")
+    return state
+
+
+# ============================================================
+# 노드 9: 공정 이력(OPER_STEP) fetch 노드
+# ============================================================
+
+def fetch_oper_step(state: GraphState) -> GraphState:
+    """공정 단계 이력 조회 및 포맷"""
+    oper_data = get_operhis_data(
+        ctn_desc=state.parsed_ctn_desc,
+        lot_cd=state.parsed_lot_cd,
+        prev=state.parsed_is_prev,
+    )
+    if oper_data:
+        print(f"[DEBUG] OPER_STEP 데이터 확인됨: {len(oper_data)}건")
+        state.answer = format_operhis_data(oper_data, state.parsed_ctn_desc)
+    else:
+        print(f"[DEBUG] 조건에 맞는 데이터 없음")
+        state.answer = f"'{state.parsed_ctn_desc}' 공정 데이터 없음"
+    state.skip_rag = True
+    print(f"[DEBUG] 응답 완료 (skip_rag=True)")
+    return state
+
+
+# ============================================================
+# 노드 10: 조건부 문서 검색 (RAG)
+# ============================================================
+
 def conditional_retrieve(state: GraphState) -> GraphState:
     if state.skip_rag:
         state.retrieved_docs = []
@@ -1254,45 +1286,59 @@ def conditional_retrieve(state: GraphState) -> GraphState:
     state.retrieved_docs = filtered
     return state
 
-#==============
-#7 노드 : 조건 부 답변 생성
-#===============
+
+# ============================================================
+# 노드 11: 최종 답변 생성
+# ============================================================
+
 @manager.main_model_type()
 def generate_response(state: GraphState) -> GraphState:
     생략
 
     return state
 
-#==============
-#8 워크플로우 등록
-#==============
 
-manager.add_node(
-    name="classify_and_execute",
-    description="질문 분류 및 SQL/API 실행",
-    func=classify_and_execute,
+# ============================================================
+# 워크플로우 등록
+# ============================================================
+
+manager.add_node(name="classify",                       description="질문 분류 및 의도 파악",        func=classify)
+manager.add_node(name="fetch_lot_setmo",                description="LOT SetMonitor 조회",          func=fetch_lot_setmo)
+manager.add_node(name="fetch_lot_future_hold",          description="LOT Future Hold 조회",         func=fetch_lot_future_hold)
+manager.add_node(name="fetch_lot_slot",                 description="LOT 슬롯 정보 조회",            func=fetch_lot_slot)
+manager.add_node(name="fetch_lot_history",              description="LOT 이력 조회",                func=fetch_lot_history)
+manager.add_node(name="fetch_eqp_info",                 description="장비 정보 조회",               func=fetch_eqp_info)
+manager.add_node(name="fetch_eqp_status",               description="장비 상태 조회",               func=fetch_eqp_status)
+manager.add_node(name="fetch_fab_model",                description="FAB+MODEL 현황 조회",          func=fetch_fab_model)
+manager.add_node(name="fetch_oper_step",                description="공정 이력 조회",               func=fetch_oper_step)
+manager.add_node(name="chat_upload_retrieve_documents", description="채팅 업로드 문서 검색",         func=chat_upload_retrieve_documents)
+manager.add_node(name="conditional_retrieve",           description="조건부 문서 검색",             func=conditional_retrieve)
+manager.add_node(name="generate_response",              description="최종 답변 생성",               func=generate_response)
+
+manager.set_entry_point("classify")
+
+manager.add_conditional_edges(
+    "classify",
+    route_by_intent,
+    {
+        "fetch_lot_setmo":              "fetch_lot_setmo",
+        "fetch_lot_future_hold":        "fetch_lot_future_hold",
+        "fetch_lot_slot":               "fetch_lot_slot",
+        "fetch_lot_history":            "fetch_lot_history",
+        "fetch_eqp_info":               "fetch_eqp_info",
+        "fetch_eqp_status":             "fetch_eqp_status",
+        "fetch_fab_model":              "fetch_fab_model",
+        "fetch_oper_step":              "fetch_oper_step",
+        "chat_upload_retrieve_documents": "chat_upload_retrieve_documents",
+    }
 )
 
-manager.add_node(
-    name="chat_upload_retrieve_documents",
-    description="채팅 업로드 문서 검색",
-    func=chat_upload_retrieve_documents,
-)
+for _fetch_node in [
+    "fetch_lot_setmo", "fetch_lot_future_hold", "fetch_lot_slot", "fetch_lot_history",
+    "fetch_eqp_info", "fetch_eqp_status", "fetch_fab_model", "fetch_oper_step",
+]:
+    manager.add_edge(_fetch_node, "chat_upload_retrieve_documents")
 
-manager.add_node(
-    name="conditional_retrieve",
-    description="조건부 문서 검색",
-    func=conditional_retrieve,
-)
-
-manager.add_node(
-    name="generate_response",
-    description="최종 답변 생성",
-    func=generate_response,
-)
-
-manager.set_entry_point("classify_and_execute")
-manager.add_edge("classify_and_execute", "chat_upload_retrieve_documents")
 manager.add_edge("chat_upload_retrieve_documents", "conditional_retrieve")
 manager.add_edge("conditional_retrieve", "generate_response")
 manager.add_edge("generate_response", GAIA_STANDARD_OUTPUT_NODE)
