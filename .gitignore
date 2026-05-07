@@ -1,0 +1,15 @@
+# 환경변수 (API 키 등) — 절대 커밋하지 않음
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Jupyter 체크포인트
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
