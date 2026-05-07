@@ -33,7 +33,9 @@ from scr.datasource.datahub_client import (
 
 logger = logging.getLogger(__name__)
 
-#state 정의
+# ============================================================
+# State 정의
+# ============================================================
 
 class GraphState(GaiaGraphState):
     foo: Optional[int] = Field(default=0)
@@ -41,7 +43,8 @@ class GraphState(GaiaGraphState):
     chat_upload_retrieved_docs: Optional[List] = Field(default=[])
     retrieved_docs: Optional[List] = Field(default=[])
 
-    intent: Optional[str] = Field(default=None)
+    group: Optional[str] = Field(default=None)       # lot / eqp / fab / oper / general
+    intent: Optional[str] = Field(default=None)      # 그룹 내 세부 의도
     query_type: Optional[str] = Field(default=None)
 
     is_eqp: bool = False
@@ -67,7 +70,10 @@ class GraphState(GaiaGraphState):
     sql_result: Optional[List[dict]] = None
     skip_rag: bool = False
 
-#환경 인프라
+# ============================================================
+# 환경 인프라
+# ============================================================
+
 VERSION = os.path.basename(os.path.dirname(os.path.abspath(__file__))).replace("_", ".")
 
 manager = AgentManager(
@@ -112,7 +118,9 @@ milvus_vectorstore = Milvus(
     enable_dynamic_field=True
 )
 
-#helper 함수
+# ============================================================
+# Helper 함수
+# ============================================================
 
 def extract_candidate(message: str) -> Optional[str]:
     #lot/장비 추출
@@ -155,15 +163,12 @@ def parse_fab_model_query(query: str) -> Optional[Dict[str, Any]]:
     if "M15X" in query_upper:
         fab = "M15"
         section_grp_nm = "M15DRAM"
-
     elif "M15NAND" in query_upper:
         fab = "M15"
         section_grp_nm = "M15NAND"
-
     elif "M15" in query_upper:
         fab = "M15"
         section_grp_nm = "M15NAND"
-
     else:
         fab = extract_fab(query_upper)
 
@@ -174,7 +179,6 @@ def parse_fab_model_query(query: str) -> Optional[Dict[str, Any]]:
         fab_data = get_eqp_by_fab(fab, "*")
         if not fab_data:
             return None
-
     except:
         return None
 
@@ -233,23 +237,18 @@ def parse_fab_model_query(query: str) -> Optional[Dict[str, Any]]:
 
 def classify_equipment(data: List[Dict]) -> tuple[List[Dict], List[Dict]]:
     '''장비 챔버분리'''
-
     main_eqp = []
     chamber_eqp = []
-
     for item in data:
         eqp_id = item.get("EQP_ID", "")
         is_chamber = "_" in eqp_id or any(suffix in eqp_id for suffix in ["CH", "SPIN"])
-
         if is_chamber:
             chamber_eqp.append(item)
         else:
             main_eqp.append(item)
-
     return main_eqp, chamber_eqp
 
 def parse_operation_query(query: str) -> Optional[Dict[str, Any]]:
-
     print(query)
     if not query:
         return None
@@ -285,12 +284,8 @@ def parse_operation_query(query: str) -> Optional[Dict[str, Any]]:
 
 @functools.lru_cache(maxsize=32)
 def get_eqp_by_fab(fab_input: str, eqp_id: str = "*", section_grp: str = None) -> List[Dict]:
-    """
-    FAB 기준 와일드 카드 조회
-    """
-
+    """FAB 기준 와일드 카드 조회"""
     fab_key = fab_input.upper().replace('X', '')
-
     fab_api_map = {
         'M10': call_eqpm10,
         'M11': call_eqpm11,
@@ -298,35 +293,26 @@ def get_eqp_by_fab(fab_input: str, eqp_id: str = "*", section_grp: str = None) -
         'M15': call_eqpm15,
         'M16': call_eqpm16,
     }
-
     if fab_key not in fab_api_map:
         print(f"[DEBUG] 유효하지 않은 FAB 입력 : {fab_input} (매핑된 키: {fab_key})")
 
     api = fab_api_map[fab_key]
-
     print(f"[DEBUG] {fab_key} API 호출 : {api} ('{eqp_id}')")
     raw_result = api(eqp_id) or []
     print(f"[DEBUG] {fab_key} API 원본 결과 : {len(raw_result)}건")
 
     if section_grp:
-        filtered_result = [
-            item for item in raw_result
-            if item.get('SECTION_GRP_NM') == section_grp
-        ]
+        filtered_result = [item for item in raw_result if item.get('SECTION_GRP_NM') == section_grp]
         print(f"[DEBUG] SECTION_GRP_NM '{section_grp}' 필터링 후 : {len(filtered_result)}건")
-
         if filtered_result:
             print(f"[DEBUG] 필터링 샘플 EQP_ID: {[d.get('EQP_ID') for d in filtered_result[:5]]}")
             print(f"[DEBUG] 필터링 샘플 SECTION_GRP_NM : {filtered_result[0].get('SECTION_GRP_NM')}")
-
         return filtered_result
 
     return raw_result
 
 def format_fab_aggregated_result(data: List[Dict], query_info: Dict) -> str:
     model_filter = " ".join([f["value"] for f in query_info.get("filters", [])]) or "전체"
-    status_filter = query_info.get("status_filter")
-
     total = len(data)
     down_list = [d for d in data if d.get("MES_STAT_TYP") == "Down"]
     down_count = len(down_list)
@@ -344,50 +330,31 @@ def format_fab_aggregated_result(data: List[Dict], query_info: Dict) -> str:
             fab_stats[fab]["up"] += 1
 
     sorted_fabs = sorted(fab_stats.items(), key=lambda x: x[1]["total"], reverse=True)
-
     lines = [f"## {model_filter} 전체현황\n"]
     lines.extend([
-        f"",
-        f"**총 {total}대** / Down {down_count}대 / 가동{up_count}대",
-        f"",
-        f"### FAB 별 집계",
-        f"",
-        f"| FAB | 총 | Down | 가동 |",
-        f"| ------ | ----- | ------ | ------ |",
+        f"", f"**총 {total}대** / Down {down_count}대 / 가동{up_count}대", f"",
+        f"### FAB 별 집계", f"", f"| FAB | 총 | Down | 가동 |", f"| ------ | ----- | ------ | ------ |",
     ])
-
     for fab, stats in sorted_fabs:
         lines.append(f"| {fab} | {stats['total']} | {stats['down']} | {stats['up']} |")
-
     if down_list:
         lines.extend([
-            f"",
-            f"### Down 상세 ({down_count}대)",
-            f"",
-            f"| EQP_ID | FAB | 모델 | 상태 | 코드 |",
-            f"| ------- | ---- | ----- | ----- | ------ |",
+            f"", f"### Down 상세 ({down_count}대)", f"",
+            f"| EQP_ID | FAB | 모델 | 상태 | 코드 |", f"| ------- | ---- | ----- | ----- | ------ |",
         ])
         for d in sorted(down_list, key=lambda x: x.get("FAC_ID") or x.get("SRC", ""))[:30]:
             fab = d.get("FAC_ID") or d.get("SRC") or d.get("_FAB", "-")
-            lines.append(
-                f"| {d.get('EQP_ID', '-')} | {fab} |"
-                f" {d.get('EQP_MODEL_CD', '-')} | {d.get('MES_STAT_TYP', '-')} |"
-                f" {d.get('EQP_STAT_CD', '-')} |"
-            )
+            lines.append(f"| {d.get('EQP_ID', '-')} | {fab} | {d.get('EQP_MODEL_CD', '-')} | {d.get('MES_STAT_TYP', '-')} | {d.get('EQP_STAT_CD', '-')} |")
         if len(down_list) > 30:
             lines.append(f"\n*외 {len(down_list)-30}건 생략*")
-
     return '\n'.join(lines)
 
 def format_setmo_data(data: List[dict], lot_id: str, filter_act: str = None) -> str:
     """SETMO 데이터 포멧팅"""
-
     if not data:
         return f"{lot_id} SETMO 정보 없음"
-
     if filter_act:
         data = [d for d in data if d.get('ACT_NM') == filter_act]
-
     if not data:
         return f"{lot_id} Setmonitoring 정보 없음"
 
@@ -398,7 +365,6 @@ def format_setmo_data(data: List[dict], lot_id: str, filter_act: str = None) -> 
         lines.append("| ----- | --------- | --------- | --------- |")
         for item in data[:20]:
             lines.append(f"| {item.get('OPER_DESC', '-')} | {item.get('ACT_DESC', '-')} | {item.get('MEAS_SLOT_NM', '-')} | {item.get('ENGR_USER_NM', '-')} |")
-
     elif filter_act == "makeOnHold":
         title = f"##{lot_id} - Future Hold \n"
         lines = [title, ""]
@@ -406,7 +372,6 @@ def format_setmo_data(data: List[dict], lot_id: str, filter_act: str = None) -> 
         lines.append("| ----- | -------- | ---------- |")
         for item in data[:20]:
             lines.append(f"| {item.get('OPER_DESC', '-')} | {item.get('ACT_DESC', '-')} | {item.get('ENGR_USER_NM', '-')} |")
-
     else:
         title = f"##{lot_id} - ALL \n"
         lines = [title, ""]
@@ -417,54 +382,40 @@ def format_setmo_data(data: List[dict], lot_id: str, filter_act: str = None) -> 
 
     if len(data) > 20:
         lines.append(f"\n*외 {len(data)-20}건 생략*")
-
     return '\n'.join(lines)
 
 def format_slot_data(data: List[Dict[str, Any]], lot_id: str) -> str:
-
     if not data:
         return f"{lot_id} 슬롯 정보 없음"
 
     latest_slots: Dict[int, Dict[str, Any]] = {}
-
     for d in data:
         pos_val = d.get("POSITION_VAL")
         if pos_val is None:
             continue
-
         try:
             pos_int = int(pos_val)
         except (ValueError, TypeError):
             continue
-
         event_tm = d.get('EVENT_TM', '')
-
         if pos_int not in latest_slots:
             latest_slots[pos_int] = d
         else:
-            existing_tm = latest_slots[pos_int].get('EVENT_TM', "")
-            if event_tm > existing_tm:
+            if event_tm > latest_slots[pos_int].get('EVENT_TM', ""):
                 latest_slots[pos_int] = d
 
     lines = [f"##{lot_id} - Slot 정보(최신 기준)\n", ""]
     lines.append(" | Slot | WF_ID | 공정 (FAB) | 시간 |")
     lines.append(" | :----: | :----- | :---------- | :-----: |")
-
     for i in range(1, 26):
         if i in latest_slots:
             item = latest_slots[i]
-            wf_id = item.get('WF_ID', '-')
-            fab = item.get('FAB', '-')
-            oper_desc = item.get('OPER_DESC', '-')
-            event_tm = item.get('EVENT_TM', '-')[:19] #날짜 부분만 잘라서 표현
-            lines.append(f" | {i} | {wf_id} | {oper_desc} ({fab}) | {event_tm} |")
+            lines.append(f" | {i} | {item.get('WF_ID', '-')} | {item.get('OPER_DESC', '-')} ({item.get('FAB', '-')}) | {item.get('EVENT_TM', '-')[:19]} |")
         else:
             lines.append(f" | {i} | *Empty* | - | - |")
-
     return '\n'.join(lines)
 
 def format_lothis_data(data: List[Dict[str, Any]], lot_id: str) -> str:
-
     if not data:
         return f"{lot_id} 이력정보 없음"
 
@@ -477,28 +428,17 @@ def format_lothis_data(data: List[Dict[str, Any]], lot_id: str) -> str:
     lines = [f"##{lot_id} - 이력정보 (최근 10건)\n", ""]
     lines.append(" | 순번 | 시간(timekey) | 이벤트(event_cd) | 공정 ID (OPER_ID) | 공정명 (CTN_DESC) | 수량 (WF_QTY) | 제품 ID(PROD_ID) |")
     lines.append("| :----: | :-------------: | :--------------------: | :----------------------: | :--------------------------------: | :------------------------------: | :-----------------: |")
-
     for idx, item in enumerate(recent_5, start=1):
-
         raw_time = str(item.get('TIMEKEY', '-'))
         if len(raw_time) >= 14 and raw_time.isdigit():
             formatted_time = f"{raw_time[:4]}-{raw_time[4:6]}-{raw_time[6:8]} {raw_time[8:10]}:{raw_time[10:12]}:{raw_time[12:14]}"
         else:
             formatted_time = raw_time
-
-        event_cd = item.get('EVENT_CD', '-') or '-'
-        oper_id = item.get('OPER_ID', '-') or '-'
-        ctn_desc = item.get('CTN_DESC', '-') or '-'
-
         wf_qty = item.get('WF_QTY')
-        wf_qty_str = str(wf_qty) if wf_qty is not None else '-'
-        prod_id = item.get('PROD_ID', '-') or '-'
-
-        lines.append(f" | {idx} | {formatted_time} | {event_cd} | {oper_id} | {ctn_desc} | {wf_qty_str} | {prod_id} |")
+        lines.append(f" | {idx} | {formatted_time} | {item.get('EVENT_CD', '-') or '-'} | {item.get('OPER_ID', '-') or '-'} | {item.get('CTN_DESC', '-') or '-'} | {str(wf_qty) if wf_qty is not None else '-'} | {item.get('PROD_ID', '-') or '-'} |")
     return '\n'.join(lines)
 
 def get_all_fab_data(filters: List[Dict] = None, status_filter: str = None) -> List[Dict]:
-
     all_data = []
     for fab in ['M10', 'M11', 'M14', 'M15', 'M16']:
         try:
@@ -510,9 +450,7 @@ def get_all_fab_data(filters: List[Dict] = None, status_filter: str = None) -> L
             print(f"[DEBUG] {fab} : {len(data)}건")
         except Exception as e:
             print(f"[DEBUG] {fab} 조회 실패: {e}")
-
     print(f"[DEBUG] 전 FAB 합계 : {len(all_data)}건")
-
     result = all_data
     if filters:
         for f in filters:
@@ -526,28 +464,17 @@ def get_all_fab_data(filters: List[Dict] = None, status_filter: str = None) -> L
 def apply_filters(data: List[Dict], query_info: Dict) -> List[Dict]:
     if not data:
         return []
-
     filtered = data
-    target_model = query_info.get("model")
-    target_proc_model = query_info.get("proc_model")
-    target_vendor = query_info.get("vendor")
-    target_area = query_info.get("area")
-    target_section = query_info.get("section_grp_nm")
-
-    if target_model:
-        filtered = [item for item in filtered if item.get("EQP_MODEL_CD") == target_model]
-
-    if target_proc_model:
-        filtered = [item for item in filtered if item.get("EQ_GROUP") == target_proc_model]
-
-    if target_vendor:
-        filtered = [item for item in filtered if item.get("VENDOR_NM") == target_vendor]
-
-    if target_area:
-        filtered = [item for item in filtered if item.get("MGMT_AREA_ID") == target_area]
-
-    if target_section:
-        filtered = [item for item in filtered if item.get("SECTION_GRP_NM") == target_section]
+    if query_info.get("model"):
+        filtered = [item for item in filtered if item.get("EQP_MODEL_CD") == query_info["model"]]
+    if query_info.get("proc_model"):
+        filtered = [item for item in filtered if item.get("EQ_GROUP") == query_info["proc_model"]]
+    if query_info.get("vendor"):
+        filtered = [item for item in filtered if item.get("VENDOR_NM") == query_info["vendor"]]
+    if query_info.get("area"):
+        filtered = [item for item in filtered if item.get("MGMT_AREA_ID") == query_info["area"]]
+    if query_info.get("section_grp_nm"):
+        filtered = [item for item in filtered if item.get("SECTION_GRP_NM") == query_info["section_grp_nm"]]
     return filtered
 
 def analyze_eqp_data(data: List[Dict], eqp_id: str) -> Dict[str, Any]:
@@ -555,14 +482,12 @@ def analyze_eqp_data(data: List[Dict], eqp_id: str) -> Dict[str, Any]:
         return {}
     main_eqp = None
     chambers = []
-
     for d in data:
         current_id = d.get("EQP_ID", "")
         if current_id == eqp_id or (eqp_id in current_id and "_" not in current_id):
             main_eqp = d
         elif "_" in current_id or current_id.startswith(eqp_id):
             chambers.append(d)
-
     if not main_eqp and data:
         main_eqp = data[0]
 
@@ -573,10 +498,7 @@ def analyze_eqp_data(data: List[Dict], eqp_id: str) -> Dict[str, Any]:
         for segment in port_info.split(","):
             parts = segment.strip().split("l") ## 추후 확인 필요
             if len(parts) >= 2:
-                port_list.append({
-                    "port": parts[0],
-                    "transfer": parts[1] if len(parts) > 1 else "-",
-                    "status": parts[2] if len(parts) > 2 else "-"})
+                port_list.append({"port": parts[0], "transfer": parts[1] if len(parts) > 1 else "-", "status": parts[2] if len(parts) > 2 else "-"})
 
     return {
         "EQP_ID": main_eqp.get("EQP_ID", eqp_id) if main_eqp else eqp_id,
@@ -605,16 +527,12 @@ def format_eqp_info_table(analyzed: Dict, show_chamber: bool = True, show_port: 
     lines.append(f" | EQP 상태 | {analyzed.get('EQP_STAT_CD', '-')} |")
     lines.append(f" | CHAMBER 수 | {analyzed.get('CHAMBER 수', '0')} |")
     lines.append(f" | DOWN 수 | {analyzed.get('DOWN 수', '0')} |")
-
     if show_chamber and analyzed.get("chamber_details"):
         sorted_chamber = sorted(analyzed["chamber_details"], key=lambda x: (x.get('EQP_ID') or ''))
-
         lines.append("\n | 챔버 ID | 상태 | EQP_STAT | LAST_EVENT |")
         lines.append("| --------- | ------ | -------- | ----------------- |")
-
         for ch in sorted_chamber:
             lines.append(f"| {ch.get('EQP_ID', '-')} | {ch.get('MES_STAT_TYP', '-')} | {ch.get('EQP_STAT_CD', '-')} | {ch.get('LAST_EVENT_TM', '-')} |")
-
     if show_port and analyzed.get("port_list"):
         lines.extend(["\n### PORT 정보", ""])
         lines.append(" | PORT | Transfer 상태 | 현재 상태 |")
@@ -622,7 +540,6 @@ def format_eqp_info_table(analyzed: Dict, show_chamber: bool = True, show_port: 
         for p in analyzed["port_list"]:
             lines.append(f"| {p['port']} | {p['transfer']} | {p['status']} |")
     return '\n'.join(lines)
-
 
 def format_eqp_status_table(analyzed: Dict, show_chamber: bool = True, show_port: bool = True) -> str:
     lines = ["## 장비 상태\n"]
@@ -634,23 +551,18 @@ def format_eqp_status_table(analyzed: Dict, show_chamber: bool = True, show_port
     lines.append(f"| EQP 상태 | {analyzed.get('EQP_STAT_CD', '-')} |")
     lines.append(f"| CHAMBER 수 | {analyzed.get('CHAMBER 수', '-')} |")
     lines.append(f"| DOWN 수 | {analyzed.get('DOWN 수', '-')} |")
-
     if show_chamber and analyzed.get("chamber_details"):
         sorted_chambers = sorted(analyzed["chamber_details"], key=lambda x: x.get('EQP_ID') or '')
-
         lines.append("\n | 챔버 ID | 상태 | EQP_STAT | LAST_EVENT |")
         lines.append("| --------- | ------ | ------------ | ------------ |")
-
         for ch in sorted_chambers:
             lines.append(f"| {ch.get('EQP_ID', '-')} | {ch.get('MES_STAT_TYP', '-')} | {ch.get('EQP_STAT_CD', '-')} | {ch.get('LAST_EVENT_TM', '-')} |")
-
     if show_port and analyzed.get("port_list"):
         lines.extend(["\n### PORT 정보", ""])
         lines.append(" | PORT | Transfer 상태 | 현재 상태 |")
         lines.append("| ------ | ------------------ | ------------- |")
         for p in analyzed["port_list"]:
             lines.append(f"| {p['port']} | {p['transfer']} | {p['status']} |")
-
     return '\n'.join(lines)
 
 def format_fab_model_result(data: List[Dict], query_info: Dict, query: str) -> str:
@@ -661,10 +573,8 @@ def format_fab_model_result(data: List[Dict], query_info: Dict, query: str) -> s
     specific_model = next((e.get("EQP_MODEL_CD") for e in data), None)
     all_models = set(e.get("EQP_MODEL_CD") for e in data)
 
-    main_eqp = [e for e in data
-                if "_" not in e.get("EQP_ID", "") and not any(suffix in e.get("EQP_ID", "") for suffix in ["CH", "SPIN"])]
-    chamber_eqp = [e for e in data
-                   if "_" in e.get("EQP_ID", "") or any(suffix in e.get("EQP_ID", "") for suffix in ["CH", "SPIN"])]
+    main_eqp = [e for e in data if "_" not in e.get("EQP_ID", "") and not any(s in e.get("EQP_ID", "") for s in ["CH", "SPIN"])]
+    chamber_eqp = [e for e in data if "_" in e.get("EQP_ID", "") or any(s in e.get("EQP_ID", "") for s in ["CH", "SPIN"])]
 
     if chamber_only:
         main_eqp = []
@@ -673,286 +583,137 @@ def format_fab_model_result(data: List[Dict], query_info: Dict, query: str) -> s
         all_chambers = chamber_eqp
         ch_total = len(all_chambers)
         ch_down = sum(1 for d in all_chambers if d.get("MES_STAT_TYP") == "Down")
-        ch_up = ch_total - ch_down
-
-        lines = [f"## {fab} {query} 현황 \n"]
-        lines.extend([
-            f"",
-            f"### Chamber",
-            f"- 총: {ch_total}개 / down: {ch_down}개 / 가동: {ch_up}개",])
-
+        lines = [f"## {fab} {query} 현황 \n", f"", f"### Chamber", f"- 총: {ch_total}개 / down: {ch_down}개 / 가동: {ch_total-ch_down}개"]
         ch_down_list = [d for d in all_chambers if d.get("MES_STAT_TYP") == "Down"]
         if ch_down_list:
-            lines.extend([
-                f"",
-                f"### Down CHAMBER 상세 ({len(ch_down_list)}개 중 상위 10개)",
-                f"",
-                f" | CHAMBER_ID | 메인장비 | 상태 | 코드 |",
-                f" | ------------------ | ---------- | -------- | ---------- |",])
-            sorted_chambers = sorted(ch_down_list, key=lambda x: x.get("EQP_ID", ""))
-            for c in sorted_chambers[:10]:
+            lines.extend([f"", f"### Down CHAMBER 상세 ({len(ch_down_list)}개 중 상위 10개)", f"", f" | CHAMBER_ID | 메인장비 | 상태 | 코드 |", f" | ------------------ | ---------- | -------- | ---------- |"])
+            for c in sorted(ch_down_list, key=lambda x: x.get("EQP_ID", ""))[:10]:
                 main_id = str(c.get("EQP_ID", "-")).split("_")[0]
-                lines.append(
-                    f" | {c.get('EQP_ID', '-')} | {main_id} |"
-                    f" {c.get('MES_STAT_TYP', '-')} | {c.get('EQP_STAT_CD', '-')} |")
-
+                lines.append(f" | {c.get('EQP_ID', '-')} | {main_id} | {c.get('MES_STAT_TYP', '-')} | {c.get('EQP_STAT_CD', '-')} |")
             if len(ch_down_list) > 10:
                 lines.append(f"\n*외 {len(ch_down_list)-10}건 생략*")
-
         return '\n'.join(lines)
 
     if len(all_models) == 1 and specific_model and (main_eqp or chamber_only):
         lines = [f"##{query}\n"]
-
         if chamber_only and not main_eqp and chamber_eqp:
-            chamber_total = len(chamber_eqp)
-            chamber_up = sum(1 for e in chamber_eqp if e.get("MES_STAT_TYP") == "Up")
-            chamber_down = chamber_total - chamber_up
-
-            lines.extend([
-                f"",
-                f"### {specific_model} CHAMBER",
-                f"",
-                f" | CHAMBER | TOTAL | UP | DOWN |",
-                f" | ------------- | ------------- | ------- | ------- |",
-                f"| {specific_model} | {chamber_total} | {chamber_up} | {chamber_down} |",])
+            ch_total = len(chamber_eqp)
+            ch_up = sum(1 for e in chamber_eqp if e.get("MES_STAT_TYP") == "Up")
+            lines.extend([f"", f"### {specific_model} CHAMBER", f"", f" | CHAMBER | TOTAL | UP | DOWN |", f" | ------------- | ------------- | ------- | ------- |", f"| {specific_model} | {ch_total} | {ch_up} | {ch_total-ch_up} |"])
         else:
             main_total = len(main_eqp)
             main_up = sum(1 for e in main_eqp if e.get("MES_STAT_TYP") == "Up")
-            main_down = main_total - main_up
-
-            chamber_total = len(chamber_eqp)
-            chamber_up = sum(1 for e in chamber_eqp if e.get("MES_STAT_TYP") == "Up")
-            chamber_down = chamber_total - chamber_up
-
-            lines.extend([
-                f"",
-                f"### {specific_model} DOWN 상태",
-                f"",
-                f" | MODEL | TOTAL | UP | DOWN |",
-                f" | ------------- | ------------- | ------- | ------- |",
-                f"| {specific_model} | {main_total} | {main_up} | {main_down} |",])
-
-            if chamber_total > 0:
-                lines.append(f" | {specific_model}(CHAMBER) | {chamber_total} | {chamber_up} | {chamber_down} |")
-
-            if main_eqp:
-                main_down_eqp = [e for e in main_eqp if e.get("MES_STAT_TYP") == "Down"][:10]
-                if main_down_eqp:
-                    lines.extend([
-                        f"",
-                        f"### MAIN 장비 DOWN (상위 10개)",
-                        f"",
-                        f" | EQP_ID | 상태 | 마지막 이벤트 |",
-                        f" | ----------- | ------- | ------------------ |",
-                    ])
-                    for e in main_down_eqp:
-                        lines.append(f"| {e.get('EQP_ID')} | {e.get('EQP_STAT_CD')} | {e.get('LAST_EVENT_TM', '')} |")
-
+            ch_total = len(chamber_eqp)
+            ch_up = sum(1 for e in chamber_eqp if e.get("MES_STAT_TYP") == "Up")
+            lines.extend([f"", f"### {specific_model} DOWN 상태", f"", f" | MODEL | TOTAL | UP | DOWN |", f" | ------------- | ------------- | ------- | ------- |", f"| {specific_model} | {main_total} | {main_up} | {main_total-main_up} |"])
+            if ch_total > 0:
+                lines.append(f" | {specific_model}(CHAMBER) | {ch_total} | {ch_up} | {ch_total-ch_up} |")
+            main_down_eqp = [e for e in main_eqp if e.get("MES_STAT_TYP") == "Down"][:10]
+            if main_down_eqp:
+                lines.extend([f"", f"### MAIN 장비 DOWN (상위 10개)", f"", f" | EQP_ID | 상태 | 마지막 이벤트 |", f" | ----------- | ------- | ------------------ |"])
+                for e in main_down_eqp:
+                    lines.append(f"| {e.get('EQP_ID')} | {e.get('EQP_STAT_CD')} | {e.get('LAST_EVENT_TM', '')} |")
         return '\n'.join(lines)
 
     else:
         lines = [f"##{query} \n"]
         models = defaultdict(lambda: {"TOTAL": 0, "UP": 0, "DOWN": 0})
         groups = defaultdict(lambda: {"TOTAL": 0, "UP": 0, "DOWN": 0})
-
-        eqp_for_stats = chamber_eqp if chamber_only else main_eqp
-
-        for e in eqp_for_stats:
+        for e in (chamber_eqp if chamber_only else main_eqp):
             model = e.get("EQP_MODEL_CD", "Unknown")
             group = e.get("EQ_GROUP", "Unknown")
             stat = e.get("MES_STAT_TYP")
-
             models[model]["TOTAL"] += 1
             groups[group]["TOTAL"] += 1
-
             if stat == "Up":
                 models[model]["UP"] += 1
                 groups[group]["UP"] += 1
             else:
                 models[model]["DOWN"] += 1
                 groups[group]["DOWN"] += 1
-
-        lines.extend([
-            f"",
-            f"### 장비 현황(MODEL 기준)",
-            f"",
-            f" | MODEL | TOTAL | UP | DOWN |",
-            f" | ------- | ------- | ----- | ------- |",
-        ])
+        lines.extend([f"", f"### 장비 현황(MODEL 기준)", f"", f" | MODEL | TOTAL | UP | DOWN |", f" | ------- | ------- | ----- | ------- |"])
         for k, v in sorted(models.items()):
             lines.append(f"| {k} | {v['TOTAL']} | {v['UP']} | {v['DOWN']} |")
-
-        lines.extend([
-            f"",
-            f"### 장비 현황(EQP_GROUP 기준)",
-            f"",
-            f" | EQ_GROUP | TOTAL | UP | DOWN |",
-            f" | ------- | ------- | ----- | ------- |",
-        ])
+        lines.extend([f"", f"### 장비 현황(EQP_GROUP 기준)", f"", f" | EQ_GROUP | TOTAL | UP | DOWN |", f" | ------- | ------- | ----- | ------- |"])
         for k, v in sorted(groups.items()):
             lines.append(f"| {k} | {v['TOTAL']} | {v['UP']} | {v['DOWN']} |")
-
         return '\n'.join(lines)
 
 def get_operhis_data(ctn_desc: str, lot_cd: Optional[str] = None, prev: bool = False, limit: int = 10) -> List[Dict]:
-
     if not lot_cd:
         print("[DEBUG] LOT_CD가 없어 조회 불가")
         return []
-
     try:
         print(f"[DEBUG] 공정 이력 API 호출 (LOT_CD : {lot_cd})")
         raw_result = call_operhis_api(lot_cd)
-
         if raw_result is None:
             print("[DEBUG] API 호출 결과 : None")
             return []
         all_data = raw_result
         print(f"[DEBUG] API 호출 성공 : {len(all_data)}건")
-
     except Exception as e:
         print(f"[DEBUG] 공정 이력 API 호출 실패: {e}")
         return []
 
     target_ctn = ctn_desc.strip().upper()
-
-    ctn_items = []
-    for item in all_data:
-        raw_val = item.get("OPERATIONDESC")
-
-        if raw_val is None:
-            continue
-
-        if str(raw_val).strip().upper() == target_ctn:
-            ctn_items.append(item)
+    ctn_items = [item for item in all_data if item.get("OPERATIONDESC") and str(item["OPERATIONDESC"]).strip().upper() == target_ctn]
 
     if not ctn_items:
         print(f"[DEBUG] {lot_cd}에서 '{ctn_desc}' 공정 없음 (찾은 항목 : {len(ctn_items)})")
         return []
 
     if prev:
-        valid_levels = []
-        for item in ctn_items:
-            lvl = item.get("OPERLEVEL")
-            if lvl is not None:
-                valid_levels.append(lvl)
-
+        valid_levels = [item.get("OPERLEVEL") for item in ctn_items if item.get("OPERLEVEL") is not None]
         if not valid_levels:
             print("[DEBUG] 유효한 OPERLEVEL이 없습니다.")
             return []
-
         target_operlevel = max(valid_levels)
         print(f"[DEBUG] 기준 OPERLEVEL : {target_operlevel}")
-
-        prev_items = []
-        for item in all_data:
-            lot_id = item.get("LOT_ID")
-            if lot_id is None:
-                continue
-            if not str(lot_id).startswith(str(lot_cd)):
-                continue
-            op_lvl = item.get("OPERLEVEL")
-            if op_lvl is None:
-                continue
-            if op_lvl < target_operlevel:
-                prev_items.append(item)
-
-        sorted_prev = sorted(prev_items, key=lambda x: x.get("OPERLEVEL", 0), reverse=True)
-        return sorted_prev[:limit]
-
+        prev_items = [item for item in all_data if item.get("LOT_ID") and str(item["LOT_ID"]).startswith(str(lot_cd)) and item.get("OPERLEVEL") is not None and item["OPERLEVEL"] < target_operlevel]
+        return sorted(prev_items, key=lambda x: x.get("OPERLEVEL", 0), reverse=True)[:limit]
     else:
-        sorted_ctn = sorted(ctn_items, key=lambda x: x.get("OPERLEVEL", 0), reverse=True)
-        return sorted_ctn[:limit]
+        return sorted(ctn_items, key=lambda x: x.get("OPERLEVEL", 0), reverse=True)[:limit]
 
 def format_operhis_data(data: List[Dict], ctn_desc: str) -> str:
     from collections import defaultdict
-
     lot_groups = defaultdict(list)
     for item in data:
-        lot_id = item.get("LOT_ID")
-        if lot_id:
-            lot_groups[lot_id].append(item)
+        if item.get("LOT_ID"):
+            lot_groups[item["LOT_ID"]].append(item)
 
-    selected = []
-    for lot_id, items in lot_groups.items():
-        max_item = max(items, key=lambda x: x.get("OPERLEVEL", 0))
-        selected.append(max_item)
+    selected = sorted(
+        [max(items, key=lambda x: x.get("OPERLEVEL", 0)) for items in lot_groups.values()],
+        key=lambda x: x.get("OPERLEVEL", 0), reverse=True
+    )[:10]
 
-    selected = sorted(selected, key=lambda x: x.get("OPERLEVEL", 0), reverse=True)[:10]
-
-    lines = [f"##{ctn_desc} 공정 이력\n"]
-    lines.extend([
-        "",
-        "| LOT_ID | WF_QTY | CTN_DESC | MES_PROC_STAT_CD | LAST_EVENT_TM | FLOW_ID |",
-        "| -------- | -------- | ---------- | ------------------------- | --------------------- | --------------- |",
-    ])
-
+    lines = [f"##{ctn_desc} 공정 이력\n", "",
+             "| LOT_ID | WF_QTY | CTN_DESC | MES_PROC_STAT_CD | LAST_EVENT_TM | FLOW_ID |",
+             "| -------- | -------- | ---------- | ------------------------- | --------------------- | --------------- |"]
     for item in selected:
-        lines.append(
-            f" | {item.get('LOT_ID', '-')} | {item.get('WF_QTY', '-')} | "
-            f"{item.get('CTN_DESC', '-')} | {item.get('MES_PROC_STAT_CD', '-')} | "
-            f"{item.get('LAST_EVENT_TM', '-')} | {item.get('FLOW_ID', '-')} |"
-        )
-
+        lines.append(f" | {item.get('LOT_ID', '-')} | {item.get('WF_QTY', '-')} | {item.get('CTN_DESC', '-')} | {item.get('MES_PROC_STAT_CD', '-')} | {item.get('LAST_EVENT_TM', '-')} | {item.get('FLOW_ID', '-')} |")
     if len(lot_groups) > 10:
         lines.append(f"\n*외 {len(lot_groups)-10}건 LOT 생략*")
-
     return '\n'.join(lines)
 
-
 def format_table(headers: List[str], rows: List[Dict]) -> str:
-
     if not rows:
         return "데이터가 없습니다"
-
     lines = []
-
     lines.append("| " + " | ".join(headers) + " |")
     lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
-
     for row in rows:
-        values = [str(row.get(h, "-")) for h in headers]
-        lines.append("| " + " | ".join(values) + " |")
-
+        lines.append("| " + " | ".join([str(row.get(h, "-")) for h in headers]) + " |")
     return "\n".join(lines)
-
-def chat_upload_retrieve_documents(state: GraphState) -> GraphState:
-    user_id = state.user_id
-    session_id = state.session_id
-
-    connection_args = {
-        "uri": config.DOCU_VECTOR_DB_URI,
-        "db_name": config.DOCU_VECTOR_DB_NAME,
-        "user": config.DOCU_VECTOR_DB_USER,
-        "password": config.DOCU_VECTOR_DB_PASSWORD
-    }
-
-    store = Milvus(
-        embedding_function=embedding_function,
-        collection_name=config.DOCU_USER_COLLECTION_NAME,
-        connection_args=connection_args,
-        vector_field='dense_vector',
-        text_field='text',
-        enable_dynamic_field=True
-    )
-
-    docs = store.similarity_search(
-        query=state.query, k=50, fetch_k=50,
-        param={"metric_type": "COSINE", "params": {"M": 8, "efConstruction": 64, "efSearch": 50}},
-    )
-    state.chat_upload_retrieved_docs = docs
-    return state
 
 
 # ============================================================
-# 노드 1: 질문 분류 (의도 파악만 담당 - API 호출 최소화)
+# 노드 1: 그룹 분류 (API 호출로 lot/eqp/fab/oper/general 판별)
 # ============================================================
 
 def classify(state: GraphState) -> GraphState:
-    """질문을 분석해 intent와 필요한 파라미터를 state에 저장한다."""
+    """질문의 도메인 그룹(lot/eqp/fab/oper/general)을 판별하고 필요 파라미터를 state에 저장한다.
+    세부 의도 분류는 각 그룹의 classify_* 노드가 담당한다."""
     query = state.query
-    query_lower = query.lower()
     query_upper = query.upper()
 
     print(f"\n[DEBUG] ============")
@@ -967,73 +728,39 @@ def classify(state: GraphState) -> GraphState:
         print(f"[DEBUG] call_lotid 호출 : {candidate}")
         lot_data = call_lotid(candidate)
         print(f"[DEBUG] call_lotid 결과 : {lot_data}")
-
         if lot_data:
             state.is_lot = True
             state.lot_id = candidate
+            state.group = "lot"
             state.query_type = "sql_api"
-            print(f"[DEBUG] LOT 확인 됨 : {candidate}")
-
-            setmo_keywords = ['셋모', 'setmo', 'setmonitor', 'set monitoring', 'set-monitoring', '계측', 's/m', 's.m', 'set monitoring']
-            hold_keywords = ['f/h', 'f.h', 'fh', 'future action', 'future hold', '퓨처홀드', '퓨처 홀드', '퓨처홀드']
-            slot_keywords = ['슬롯', 'slot', '랏정보', 'lot 정보', '정보', '상태', '어디', '위치', '공정']
-            his_keywords = ['이력']
-
-            if any(k in query_lower for k in setmo_keywords):
-                print("[DEBUG] -> SETMO Monitor 의도 확인")
-                state.intent = "setmonitoring"
-            elif any(k in query_lower for k in hold_keywords):
-                print("[DEBUG] -> Future Hold 의도 확인")
-                state.intent = "future_action"
-            elif any(k in query_lower for k in slot_keywords):
-                print("[DEBUG] -> Slot Info 의도 확인")
-                state.intent = "lot_info"
-            elif any(k in query_lower for k in his_keywords):
-                print("[DEBUG] -> LOT 이력 조회 의도 확인")
-                state.intent = "lot_his"
-            else:
-                print("[DEBUG] -> 키워드 없음, 기본 LOT 이력 조회")
-                state.intent = "lot_his"
-
+            print(f"[DEBUG] LOT 확인 됨 : {candidate} → group=lot")
             return state
         else:
             print(f"[DEBUG] LOT 아님: {candidate}")
 
-    # 2단계: 장비 판별
-    print("[DEBUG] LOT 아님 -> 2단계 진행")
+    # 2단계: 장비(EQP) 판별
+    print("[DEBUG] 2단계: 장비 판별")
     eqp_candidate = candidate
     print(f"[DEBUG] 장비 후보 : {eqp_candidate}, FAB 힌트 : {extract_fab(query_upper) or '없음'}")
-
     if eqp_candidate:
         try:
             eq_check = call_eq(eqp_candidate)
         except Exception as e:
-            print(f"[DEBUG] call eq 실패: {e}")
+            print(f"[DEBUG] call_eq 실패: {e}")
             eq_check = None
 
         if eq_check and len(eq_check) > 0:
             actual_fab = eq_check[0].get("FAC_ID") or eq_check[0].get("SRC")
             print(f"[DEBUG] call_eq 결과 : {eqp_candidate} in {actual_fab}")
-
-            print(f"[DEBUG] {actual_fab} 상세 API 조회")
             eqp_data = get_eqp_by_fab(actual_fab, eqp_candidate)
-
             if eqp_data:
-                print(f"[DEBUG] 상세 조회 성공: {len(eqp_data)}건")
+                print(f"[DEBUG] 상세 조회 성공: {len(eqp_data)}건 → group=eqp")
                 state.is_eqp = True
                 state.eqp_id = eqp_candidate
                 state.eqp_data = eqp_data
                 state.fab = actual_fab
+                state.group = "eqp"
                 state.query_type = "sql_api"
-
-                info_keywords = ['장비정보', '장비 정보', 'equipment info', 'eqp info', '정보']
-                if any(k in query_lower for k in info_keywords):
-                    print("[DEBUG] -> 장비 정보 의도 확인")
-                    state.intent = "eqp_info"
-                else:
-                    print("[DEBUG] -> 장비 상태 의도 확인 (기본값)")
-                    state.intent = "eqp_status"
-
                 return state
             else:
                 print(f"[DEBUG] 상세 조회 실패 : {actual_fab} {eqp_candidate}")
@@ -1041,10 +768,9 @@ def classify(state: GraphState) -> GraphState:
             print(f"[DEBUG] 장비 아님: {eqp_candidate}")
 
     # 3단계: FAB+MODEL 판별
-    print("[DEBUG] 3 단계: FAB+MODEL 판별 시도")
+    print("[DEBUG] 3단계: FAB+MODEL 판별 시도")
     fab_model_query = parse_fab_model_query(query)
     print(f"[DEBUG] parse_fab_model_query 결과 : {fab_model_query}")
-
     if fab_model_query:
         state.fab = fab_model_query["fab"]
         state.section_grp_nm = fab_model_query.get("section_grp_nm")
@@ -1056,59 +782,121 @@ def classify(state: GraphState) -> GraphState:
         state.fab_group_by = fab_model_query.get("group_by")
         state.fab_aggregate = fab_model_query.get("aggregate", "list")
         state.fab_chamber_only = fab_model_query.get("chamber_only", False)
-        state.intent = "fab_model_query"
+        state.group = "fab"
         state.query_type = "sql_api"
+        print(f"[DEBUG] FAB+MODEL 확인 됨 : {state.fab} → group=fab")
         return state
 
     # 4단계: OPER_STEP 판별
-    print("[DEBUG] 3.5 단계: OPER_STEP 판별 시도 (구조화된 파싱)")
+    print("[DEBUG] 4단계: OPER_STEP 판별 시도")
     oper_query_info = parse_operation_query(query)
-
     if oper_query_info:
         lot_cd = oper_query_info.get("lot_cd")
         ctn_candidate = oper_query_info.get("ctn_desc_candidate")
         is_prev = oper_query_info.get("is_prev", False)
         print(f"[DEBUG] 파싱 결과 - LOT_CD : {lot_cd}, CTN_CANDIDATE: {ctn_candidate}, PREV: {is_prev}")
-
         if ctn_candidate:
             state.parsed_lot_cd = lot_cd
             state.parsed_ctn_desc = ctn_candidate
             state.parsed_is_prev = is_prev
-            state.intent = "oper_step"
+            state.group = "oper"
             state.query_type = "sql_api"
+            print(f"[DEBUG] OPER_STEP 확인 됨 → group=oper")
             return state
         else:
-            print(f"[DEBUG] 조건에 맞는 데이터 없음")
+            print(f"[DEBUG] 공정 매칭 없음")
 
     # 5단계: 일반 질문 (RAG)
-    print("[DEBUG] 5단계 : 일반 질문(RAG)")
-    state.intent = "general_qa"
+    print("[DEBUG] 5단계: 일반 질문(RAG) → group=general")
+    state.group = "general"
     state.query_type = "general"
     state.skip_rag = False
     return state
 
 
 # ============================================================
-# 라우팅 함수: intent → 다음 노드 결정
+# 라우팅 1: group → 그룹별 classify 또는 fetch 노드
 # ============================================================
 
-def route_by_intent(state: GraphState) -> str:
-    """classify 이후 intent에 따라 실행할 fetch 노드를 반환한다."""
-    intent_map = {
-        "setmonitoring":  "fetch_lot_setmo",
-        "future_action":  "fetch_lot_future_hold",
-        "lot_info":       "fetch_lot_slot",
-        "lot_his":        "fetch_lot_history",
-        "eqp_info":       "fetch_eqp_info",
-        "eqp_status":     "fetch_eqp_status",
-        "fab_model_query":"fetch_fab_model",
-        "oper_step":      "fetch_oper_step",
-    }
-    return intent_map.get(state.intent, "chat_upload_retrieve_documents")
+def route_by_group(state: GraphState) -> str:
+    """group에 따라 세부 분류 노드 또는 직접 fetch 노드로 라우팅한다.
+    lot/eqp는 세부 의도가 여러 개이므로 classify_* 노드를 경유한다."""
+    return {
+        "lot":  "classify_lot",
+        "eqp":  "classify_eqp",
+        "fab":  "fetch_fab_model",
+        "oper": "fetch_oper_step",
+    }.get(state.group, "retrieve")
 
 
 # ============================================================
-# 노드 2~5: LOT 관련 fetch 노드
+# 노드 2: LOT 세부 의도 분류 (키워드 매칭만, API 호출 없음)
+# ============================================================
+
+def classify_lot(state: GraphState) -> GraphState:
+    """LOT 그룹 내 세부 의도(setmonitoring/future_action/lot_info/lot_his)를 키워드로 분류한다."""
+    query_lower = state.query.lower()
+
+    setmo_keywords = ['셋모', 'setmo', 'setmonitor', 'set monitoring', 'set-monitoring', '계측', 's/m', 's.m']
+    hold_keywords  = ['f/h', 'f.h', 'fh', 'future action', 'future hold', '퓨처홀드', '퓨처 홀드', '퓨처홀드']
+    slot_keywords  = ['슬롯', 'slot', '랏정보', 'lot 정보', '정보', '상태', '어디', '위치', '공정']
+    his_keywords   = ['이력']
+
+    if any(k in query_lower for k in setmo_keywords):
+        print("[DEBUG] LOT → intent: setmonitoring")
+        state.intent = "setmonitoring"
+    elif any(k in query_lower for k in hold_keywords):
+        print("[DEBUG] LOT → intent: future_action")
+        state.intent = "future_action"
+    elif any(k in query_lower for k in slot_keywords):
+        print("[DEBUG] LOT → intent: lot_info")
+        state.intent = "lot_info"
+    elif any(k in query_lower for k in his_keywords):
+        print("[DEBUG] LOT → intent: lot_his")
+        state.intent = "lot_his"
+    else:
+        print("[DEBUG] LOT → intent: lot_his (기본값)")
+        state.intent = "lot_his"
+
+    return state
+
+
+def route_lot_intent(state: GraphState) -> str:
+    """LOT 세부 의도 → fetch 노드 결정"""
+    return {
+        "setmonitoring": "fetch_lot_setmo",
+        "future_action": "fetch_lot_future_hold",
+        "lot_info":      "fetch_lot_slot",
+        "lot_his":       "fetch_lot_history",
+    }.get(state.intent, "fetch_lot_history")
+
+
+# ============================================================
+# 노드 3: EQP 세부 의도 분류 (키워드 매칭만, API 호출 없음)
+# ============================================================
+
+def classify_eqp(state: GraphState) -> GraphState:
+    """EQP 그룹 내 세부 의도(eqp_info/eqp_status)를 키워드로 분류한다."""
+    query_lower = state.query.lower()
+    info_keywords = ['장비정보', '장비 정보', 'equipment info', 'eqp info', '정보']
+
+    if any(k in query_lower for k in info_keywords):
+        print("[DEBUG] EQP → intent: eqp_info")
+        state.intent = "eqp_info"
+    else:
+        print("[DEBUG] EQP → intent: eqp_status (기본값)")
+        state.intent = "eqp_status"
+
+    return state
+
+
+def route_eqp_intent(state: GraphState) -> str:
+    """EQP 세부 의도 → fetch 노드 결정"""
+    return "fetch_eqp_info" if state.intent == "eqp_info" else "fetch_eqp_status"
+
+
+# ============================================================
+# 노드 4~7: LOT fetch 노드 (API 호출 + 포맷팅)
 # ============================================================
 
 def fetch_lot_setmo(state: GraphState) -> GraphState:
@@ -1154,7 +942,7 @@ def fetch_lot_history(state: GraphState) -> GraphState:
 
 
 # ============================================================
-# 노드 6~7: 장비(EQP) 관련 fetch 노드
+# 노드 8~9: EQP fetch 노드 (분석 + 포맷팅)
 # ============================================================
 
 def fetch_eqp_info(state: GraphState) -> GraphState:
@@ -1177,38 +965,36 @@ def fetch_eqp_status(state: GraphState) -> GraphState:
 
 
 # ============================================================
-# 노드 8: FAB+MODEL 현황 fetch 노드
+# 노드 10: FAB+MODEL fetch 노드
 # ============================================================
 
 def fetch_fab_model(state: GraphState) -> GraphState:
     """FAB+MODEL 기준 장비 현황 조회 및 포맷"""
     fab = state.fab
     raw_data = get_eqp_by_fab(fab, "*")
-
     if not raw_data:
         state.answer = f"{fab} 펩에 등록된 장비 데이터가 없습니다."
         state.skip_rag = True
         return state
 
     query_info = {
-        "fab":           state.fab,
-        "model":         state.fab_model,
-        "proc_model":    state.fab_proc_model,
-        "vendor":        state.fab_vendor,
-        "area":          state.fab_area,
-        "section_grp_nm":state.section_grp_nm,
-        "keywords":      state.fab_keyword or [],
-        "chamber_only":  state.fab_chamber_only,
-        "group_by":      state.fab_group_by,
-        "aggregate":     state.fab_aggregate,
+        "fab":            state.fab,
+        "model":          state.fab_model,
+        "proc_model":     state.fab_proc_model,
+        "vendor":         state.fab_vendor,
+        "area":           state.fab_area,
+        "section_grp_nm": state.section_grp_nm,
+        "keywords":       state.fab_keyword or [],
+        "chamber_only":   state.fab_chamber_only,
+        "group_by":       state.fab_group_by,
+        "aggregate":      state.fab_aggregate,
     }
-
     filtered_data = apply_filters(raw_data, query_info)
 
     if not filtered_data:
         conditions = []
-        if state.fab_model:     conditions.append(f"모델:{state.fab_model}")
-        if state.fab_area:      conditions.append(f"구역:{state.fab_area}")
+        if state.fab_model:      conditions.append(f"모델:{state.fab_model}")
+        if state.fab_area:       conditions.append(f"구역:{state.fab_area}")
         if state.section_grp_nm: conditions.append(f"섹션:{state.section_grp_nm}")
         state.answer = f"{fab} 펩에서 {', '.join(conditions)} 조건에 맞는 장비를 찾을 수 없습니다."
     else:
@@ -1222,7 +1008,7 @@ def fetch_fab_model(state: GraphState) -> GraphState:
 
 
 # ============================================================
-# 노드 9: 공정 이력(OPER_STEP) fetch 노드
+# 노드 11: 공정 이력 fetch 노드
 # ============================================================
 
 def fetch_oper_step(state: GraphState) -> GraphState:
@@ -1244,17 +1030,39 @@ def fetch_oper_step(state: GraphState) -> GraphState:
 
 
 # ============================================================
-# 노드 10: 조건부 문서 검색 (RAG)
+# 노드 12: 문서 검색 통합 (채팅 업로드 + RAG)
 # ============================================================
 
-def conditional_retrieve(state: GraphState) -> GraphState:
+def retrieve(state: GraphState) -> GraphState:
+    """채팅 업로드 문서 검색과 RAG 문서 검색을 하나의 노드에서 처리한다.
+    채팅 업로드 검색은 항상 실행하고, RAG 검색은 skip_rag=False일 때만 실행한다."""
+
+    # 1. 채팅 업로드 문서 검색 (항상 실행)
+    store = Milvus(
+        embedding_function=embedding_function,
+        collection_name=config.DOCU_USER_COLLECTION_NAME,
+        connection_args={
+            "uri": config.DOCU_VECTOR_DB_URI,
+            "db_name": config.DOCU_VECTOR_DB_NAME,
+            "user": config.DOCU_VECTOR_DB_USER,
+            "password": config.DOCU_VECTOR_DB_PASSWORD
+        },
+        vector_field='dense_vector',
+        text_field='text',
+        enable_dynamic_field=True
+    )
+    state.chat_upload_retrieved_docs = store.similarity_search(
+        query=state.query, k=50, fetch_k=50,
+        param={"metric_type": "COSINE", "params": {"M": 8, "efConstruction": 64, "efSearch": 50}},
+    )
+
+    # 2. RAG 문서 검색 (skip_rag=False일 때만 실행)
     if state.skip_rag:
         state.retrieved_docs = []
         return state
 
-    query = state.query
     docs = milvus_vectorstore.similarity_search_with_score(
-        query=query, k=50, fetch_k=50,
+        query=state.query, k=50, fetch_k=50,
         param={"metric_type": "COSINE", "params": {"M": 8, "efConstruction": 64, "efSearch": 100}},
     )
 
@@ -1270,17 +1078,13 @@ def conditional_retrieve(state: GraphState) -> GraphState:
 
     if filtered:
         stop_words = {"은", "는", "의", "가", "을", "를", "에", "와", "과", "로"}
-        keywords = [w for w in query.split() if len(w) > 1 and w not in stop_words]
-
+        keywords = [w for w in state.query.split() if len(w) > 1 and w not in stop_words]
         for doc in filtered:
-            content = doc.page_content.lower()
-            doc.metadata["keyword_score"] = sum(1 for w in keywords if w.lower() in content)
-
+            doc.metadata["keyword_score"] = sum(1 for w in keywords if w.lower() in doc.page_content.lower())
         max_kw = max(doc.metadata["keyword_score"] for doc in filtered)
         for doc in filtered:
             norm = doc.metadata["keyword_score"] / max_kw if max_kw > 0 else 0
             doc.metadata["combined_score"] = doc.metadata["similarity"] * 0.7 + norm * 0.3
-
         filtered = sorted(filtered, key=lambda x: x.metadata["combined_score"], reverse=True)
 
     state.retrieved_docs = filtered
@@ -1288,7 +1092,7 @@ def conditional_retrieve(state: GraphState) -> GraphState:
 
 
 # ============================================================
-# 노드 11: 최종 답변 생성
+# 노드 13: 최종 답변 생성
 # ============================================================
 
 @manager.main_model_type()
@@ -1302,45 +1106,65 @@ def generate_response(state: GraphState) -> GraphState:
 # 워크플로우 등록
 # ============================================================
 
-manager.add_node(name="classify",                       description="질문 분류 및 의도 파악",        func=classify)
-manager.add_node(name="fetch_lot_setmo",                description="LOT SetMonitor 조회",          func=fetch_lot_setmo)
-manager.add_node(name="fetch_lot_future_hold",          description="LOT Future Hold 조회",         func=fetch_lot_future_hold)
-manager.add_node(name="fetch_lot_slot",                 description="LOT 슬롯 정보 조회",            func=fetch_lot_slot)
-manager.add_node(name="fetch_lot_history",              description="LOT 이력 조회",                func=fetch_lot_history)
-manager.add_node(name="fetch_eqp_info",                 description="장비 정보 조회",               func=fetch_eqp_info)
-manager.add_node(name="fetch_eqp_status",               description="장비 상태 조회",               func=fetch_eqp_status)
-manager.add_node(name="fetch_fab_model",                description="FAB+MODEL 현황 조회",          func=fetch_fab_model)
-manager.add_node(name="fetch_oper_step",                description="공정 이력 조회",               func=fetch_oper_step)
-manager.add_node(name="chat_upload_retrieve_documents", description="채팅 업로드 문서 검색",         func=chat_upload_retrieve_documents)
-manager.add_node(name="conditional_retrieve",           description="조건부 문서 검색",             func=conditional_retrieve)
-manager.add_node(name="generate_response",              description="최종 답변 생성",               func=generate_response)
+manager.add_node(name="classify",              description="그룹 분류 및 파라미터 추출",          func=classify)
+manager.add_node(name="classify_lot",          description="LOT 세부 의도 분류",                func=classify_lot)
+manager.add_node(name="classify_eqp",          description="EQP 세부 의도 분류",                func=classify_eqp)
+manager.add_node(name="fetch_lot_setmo",       description="LOT SetMonitor 조회",              func=fetch_lot_setmo)
+manager.add_node(name="fetch_lot_future_hold", description="LOT Future Hold 조회",             func=fetch_lot_future_hold)
+manager.add_node(name="fetch_lot_slot",        description="LOT 슬롯 정보 조회",                func=fetch_lot_slot)
+manager.add_node(name="fetch_lot_history",     description="LOT 이력 조회",                    func=fetch_lot_history)
+manager.add_node(name="fetch_eqp_info",        description="장비 정보 조회",                   func=fetch_eqp_info)
+manager.add_node(name="fetch_eqp_status",      description="장비 상태 조회",                   func=fetch_eqp_status)
+manager.add_node(name="fetch_fab_model",       description="FAB+MODEL 현황 조회",              func=fetch_fab_model)
+manager.add_node(name="fetch_oper_step",       description="공정 이력 조회",                   func=fetch_oper_step)
+manager.add_node(name="retrieve",              description="문서 검색 통합 (채팅 업로드 + RAG)", func=retrieve)
+manager.add_node(name="generate_response",     description="최종 답변 생성",                   func=generate_response)
 
 manager.set_entry_point("classify")
 
+# 1차 라우팅: group → 그룹 classify 또는 직접 fetch
 manager.add_conditional_edges(
     "classify",
-    route_by_intent,
+    route_by_group,
     {
-        "fetch_lot_setmo":              "fetch_lot_setmo",
-        "fetch_lot_future_hold":        "fetch_lot_future_hold",
-        "fetch_lot_slot":               "fetch_lot_slot",
-        "fetch_lot_history":            "fetch_lot_history",
-        "fetch_eqp_info":               "fetch_eqp_info",
-        "fetch_eqp_status":             "fetch_eqp_status",
-        "fetch_fab_model":              "fetch_fab_model",
-        "fetch_oper_step":              "fetch_oper_step",
-        "chat_upload_retrieve_documents": "chat_upload_retrieve_documents",
+        "classify_lot":   "classify_lot",
+        "classify_eqp":   "classify_eqp",
+        "fetch_fab_model":"fetch_fab_model",
+        "fetch_oper_step":"fetch_oper_step",
+        "retrieve":       "retrieve",
     }
 )
 
+# 2차 라우팅: LOT 세부 의도 → fetch 노드
+manager.add_conditional_edges(
+    "classify_lot",
+    route_lot_intent,
+    {
+        "fetch_lot_setmo":       "fetch_lot_setmo",
+        "fetch_lot_future_hold": "fetch_lot_future_hold",
+        "fetch_lot_slot":        "fetch_lot_slot",
+        "fetch_lot_history":     "fetch_lot_history",
+    }
+)
+
+# 2차 라우팅: EQP 세부 의도 → fetch 노드
+manager.add_conditional_edges(
+    "classify_eqp",
+    route_eqp_intent,
+    {
+        "fetch_eqp_info":   "fetch_eqp_info",
+        "fetch_eqp_status": "fetch_eqp_status",
+    }
+)
+
+# 모든 fetch 노드 → retrieve
 for _fetch_node in [
     "fetch_lot_setmo", "fetch_lot_future_hold", "fetch_lot_slot", "fetch_lot_history",
     "fetch_eqp_info", "fetch_eqp_status", "fetch_fab_model", "fetch_oper_step",
 ]:
-    manager.add_edge(_fetch_node, "chat_upload_retrieve_documents")
+    manager.add_edge(_fetch_node, "retrieve")
 
-manager.add_edge("chat_upload_retrieve_documents", "conditional_retrieve")
-manager.add_edge("conditional_retrieve", "generate_response")
+manager.add_edge("retrieve", "generate_response")
 manager.add_edge("generate_response", GAIA_STANDARD_OUTPUT_NODE)
 manager.compile()
 print(f"[{VERSION}] 워크플로우 컴파일 완료")
