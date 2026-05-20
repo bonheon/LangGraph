@@ -1,0 +1,67 @@
+{
+  "evaluated_at": "2026-05-20T22:40:28.644660",
+  "summary": {
+    "faithfulness": 0.8857142857142857,
+    "answer_relevancy": 0.5144206950726968,
+    "context_precision": 0.837499999933125,
+    "context_recall": 0.875
+  },
+  "details": [
+    {
+      "question": "CVD 공정에서 두께 편차가 생기는 원인이 뭐야?",
+      "faithfulness": 1.0,
+      "answer_relevancy": 0.46015488914085484,
+      "context_precision": 0.99999999995,
+      "context_recall": 1.0
+    },
+    {
+      "question": "CMP 공정에서 스크래치가 발생하면 어떻게 조치해?",
+      "faithfulness": 1.0,
+      "answer_relevancy": 0.5110473867247152,
+      "context_precision": 0.9999999999,
+      "context_recall": 1.0
+    },
+    {
+      "question": "LPCVD 장비 PM 주기와 항목을 알려줘",
+      "faithfulness": 1.0,
+      "answer_relevancy": 0.5915607488326349,
+      "context_precision": 0.699999999965,
+      "context_recall": 1.0
+    },
+    {
+      "question": "장비 FAULT 발생 시 초기 대응 절차는?",
+      "faithfulness": 1.0,
+      "answer_relevancy": 0.626287556535758,
+      "context_precision": 0.9999999999,
+      "context_recall": 1.0
+    },
+    {
+      "question": "ALD 막두께 균일도 불량의 원인이 뭐야?",
+      "faithfulness": 1.0,
+      "answer_relevancy": 0.4543756294078114,
+      "context_precision": 0.99999999995,
+      "context_recall": 1.0
+    },
+    {
+      "question": "포토 리소그래피에서 패턴 불량이 생기면?",
+      "faithfulness": 1.0,
+      "answer_relevancy": 0.24076940482877154,
+      "context_precision": 0.0,
+      "context_recall": 0.0
+    },
+    {
+      "question": "Setmonitor가 뭐야?",
+      "faithfulness": 0.8,
+      "answer_relevancy": 0.6743455563177153,
+      "context_precision": 0.9999999999,
+      "context_recall": 1.0
+    },
+    {
+      "question": "Future Hold는 어떻게 설정해?",
+      "faithfulness": 0.2857142857142857,
+      "answer_relevancy": 0.5568243887933139,
+      "context_precision": 0.9999999999,
+      "context_recall": 1.0
+    }
+  ]
+}

@@ -26,6 +26,7 @@ from langchain_core.documents import Document
 from langchain_community.vectorstores import FAISS
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langgraph.graph import StateGraph, START, END
+from langgraph.checkpoint.memory import MemorySaver
 
 
 # ── 2. API 키 & LLM 초기화 ──────────────────────────────────────────────────
@@ -457,6 +458,7 @@ def run_tool_calling(query: str, verbose: bool = True) -> GraphState:
 # ── 7. WorkflowState (TypedDict) & 파서 헬퍼 ────────────────────────────────
 class WorkflowState(TypedDict, total=False):
     query: str
+    resolved_query: str  # 대화 이력 기반으로 지칭어가 해소된 질문
     answer: str
     group: str          # lot / eqp / fab / oper / general
     intent: str         # 그룹 내 세부 의도
@@ -478,6 +480,8 @@ class WorkflowState(TypedDict, total=False):
     # RAG 제어
     skip_rag: bool
     retrieved_docs: list
+    # Multi-turn
+    chat_history: List[dict]  # [{"role": "user"|"assistant", "content": "..."}]
 
 
 def extract_candidate(message: str) -> Optional[str]:
@@ -528,10 +532,37 @@ def parse_operation_query(query: str) -> Optional[dict]:
     return {"lot_cd": lot_cd, "ctn_desc": matched[0], "is_prev": is_prev}
 
 
-# ── 8. classify 노드 ──────────────────────────────────────────────────────────
+# ── 7-0. resolve_query 노드 ───────────────────────────────────────────────
+# 지칭어("그거", "해당 장비" 등)가 있을 때만 LLM으로 질문을 재작성한다.
+# 없으면 아무것도 변경하지 않아 불필요한 LLM 호출을 피한다.
+_AMBIGUOUS_TOKENS = ["그거", "그 장비", "그 랏", "해당", "거기", "그게", "그것", "그 모델", "동일한"]
+
+def resolve_query(state: WorkflowState) -> dict:
+    history = state.get("chat_history") or []
+    query   = state["query"]
+
+    if not history or not any(t in query for t in _AMBIGUOUS_TOKENS):
+        return {}  # 변경 없음 — classify가 원본 query 사용
+
+    recent      = history[-6:]  # 최근 3턴
+    history_txt = "\n".join(f"{m['role']}: {m['content']}" for m in recent)
+    response = llm.invoke([
+        SystemMessage(content=(
+            "이전 대화를 참고하여 아래 질문의 지칭어(그거, 해당, 그 장비 등)를 "
+            "구체적인 값으로 바꿔서 한 문장으로 재작성하세요. 질문만 출력하세요.\n\n"
+            f"[이전 대화]\n{history_txt}"
+        )),
+        HumanMessage(content=query),
+    ])
+    resolved = response.content.strip()
+    print(f"[resolve_query] '{query}' → '{resolved}'")
+    return {"resolved_query": resolved}
+
+
+# ── 8. classify 노드 ──────────────────────────────────────────────────────
 def classify(state: WorkflowState) -> dict:
-    """LLM 없이 regex + API 호출로 그룹(lot/eqp/fab/oper/general) 판별"""
-    query = state["query"]
+    """LLM 없이 regex + API 호출로 그룹 판별 (workflow.py classify() 동일 패턴)"""
+    query = state.get("resolved_query") or state["query"]
     print(f"\n[classify] 질문: {query}")
 
     candidate = extract_candidate(query)
@@ -671,25 +702,58 @@ vectorstore = FAISS.from_documents(SAMPLE_KNOWLEDGE_DOCS, embedding_model)
 # ── 12. retrieve & generate_response 노드 ────────────────────────────────────
 SIMILARITY_THRESHOLD = 0.30
 
+# HyDE: LLM이 가상 기술 문서를 생성 → 그 임베딩으로 검색
+# 구어체 질문과 전문 문서 사이의 임베딩 거리를 좁히는 것이 목적
+_HYDE_PROMPT = (
+    "당신은 반도체 FAB 공정 전문가입니다. "
+    "아래 질문에 대한 답을 실제 기술 문서처럼 전문 용어를 사용해 150자 이내로 작성하세요. "
+    "문서 형식으로만 출력하고 추가 설명은 하지 마세요."
+)
+
+def _generate_hypothetical_doc(query: str) -> str:
+    """질문 → 가상 기술 문서 생성 (HyDE 핵심)"""
+    response = llm.invoke([
+        SystemMessage(content=_HYDE_PROMPT),
+        HumanMessage(content=query),
+    ])
+    return response.content.strip()
+
+
 def retrieve(state: WorkflowState) -> dict:
-    """skip_rag=True : 벡터 검색 스킵 / False : FAISS 검색 + 키워드 재랭킹"""
+    """
+    - skip_rag=True : 검색 스킵 (구조적 데이터 경로)
+    - skip_rag=False: HyDE → FAISS 검색 → 키워드 재랭킹 (general 경로)
+
+    HyDE 흐름:
+        원본 질문 → LLM → 가상 답변 문서 → 임베딩 → 벡터 검색
+        (키워드 재랭킹은 원본 질문 기준으로 수행)
+    """
     if state.get("skip_rag", True):
         print("[retrieve] skip_rag=True → 스킵")
         return {"retrieved_docs": []}
 
-    query = state["query"]
-    docs_with_score = vectorstore.similarity_search_with_score(query, k=5)
+    original_query = state.get("resolved_query") or state["query"]
 
+    # ── HyDE: 가상 문서로 검색 벡터 생성
+    hypothetical_doc = _generate_hypothetical_doc(original_query)
+    print(f"[retrieve/HyDE] 가상 문서: {hypothetical_doc[:80]}…")
+
+    # 가상 문서 임베딩으로 검색 (원본 질문 대신)
+    docs_with_score = vectorstore.similarity_search_with_score(hypothetical_doc, k=5)
+
+    # FAISS L2 distance → cosine similarity 변환 (단위 벡터 기준)
+    # text-embedding-3-small은 정규화된 벡터 → cosine = 1 - L2^2/2
     filtered = []
     for doc, score in docs_with_score:
-        sim = max(0.0, 1 - score)
-        if sim >= SIMILARITY_THRESHOLD:
-            doc.metadata["similarity"] = round(sim, 4)
+        cosine_sim = max(0.0, 1.0 - (score ** 2) / 2.0)
+        if cosine_sim >= SIMILARITY_THRESHOLD:
+            doc.metadata["similarity"] = round(cosine_sim, 4)
             filtered.append(doc)
 
+    # ── 키워드 재랭킹은 원본 질문 기준 (사용자 의도에 맞게)
     if filtered:
         stop_words = {"은", "는", "의", "가", "을", "를", "에", "와", "과", "로", "이"}
-        keywords = [w for w in query.split() if len(w) > 1 and w not in stop_words]
+        keywords = [w for w in original_query.split() if len(w) > 1 and w not in stop_words]
         for doc in filtered:
             doc.metadata["keyword_score"] = sum(1 for k in keywords if k.lower() in doc.page_content.lower())
         max_kw = max(doc.metadata["keyword_score"] for doc in filtered) or 1
@@ -701,7 +765,17 @@ def retrieve(state: WorkflowState) -> dict:
     print(f"[retrieve] {len(docs_with_score)}건 검색 → {len(filtered)}건 채택")
     for doc in filtered:
         print(f"  [{doc.metadata['source']}] sim={doc.metadata.get('similarity'):.3f} combined={doc.metadata.get('combined_score', 0):.3f}")
-    return {"retrieved_docs": filtered}
+
+    # MemorySaver는 msgpack 직렬화를 사용 → Document/numpy 타입 불가, dict로 변환
+    serializable = [
+        {
+            "page_content": d.page_content,
+            "metadata": {k: float(v) if hasattr(v, "item") else v
+                         for k, v in d.metadata.items()},
+        }
+        for d in filtered
+    ]
+    return {"retrieved_docs": serializable}
 
 
 _RAG_PROMPT = """당신은 반도체 FAB MES 시스템 AI 어시스턴트입니다.
@@ -710,31 +784,49 @@ _RAG_PROMPT = """당신은 반도체 FAB MES 시스템 AI 어시스턴트입니�
 {context}"""
 
 def generate_response(state: WorkflowState) -> dict:
-    """구조적 데이터(answer) + retrieved_docs → LLM 최종 답변"""
+    """구조적 데이터(answer) + retrieved_docs + 대화 이력 → LLM 최종 답변"""
     parts = []
     if state.get("answer"):
         parts.append(f"[구조적 데이터]\n{state['answer']}")
     if state.get("retrieved_docs"):
         rag_ctx = "\n\n".join(
-            f"[출처: {d.metadata.get('source')}]\n{d.page_content}"
+            f"[출처: {d.get('metadata', {}).get('source', '')}]\n{d.get('page_content', '')}"
             for d in state["retrieved_docs"]
         )
         parts.append(f"[참고 문서]\n{rag_ctx}")
 
-    context = "\n\n".join(parts) or "관련 데이터 없음"
-    response = llm.invoke([
-        SystemMessage(content=_RAG_PROMPT.format(context=context)),
-        HumanMessage(content=state["query"]),
-    ])
+    context       = "\n\n".join(parts) or "관련 데이터 없음"
+    history       = state.get("chat_history") or []
+    current_query = state.get("resolved_query") or state["query"]
+
+    # 시스템 메시지 + 최근 대화 이력(최대 6개 메시지 = 3턴) + 현재 질문
+    messages = [SystemMessage(content=_RAG_PROMPT.format(context=context))]
+    for msg in history[-6:]:
+        if msg["role"] == "user":
+            messages.append(HumanMessage(content=msg["content"]))
+        else:
+            messages.append(AIMessage(content=msg["content"]))
+    messages.append(HumanMessage(content=current_query))
+
+    response = llm.invoke(messages)
+
     src = f"참고문서 {len(state.get('retrieved_docs', []))}건" if state.get("retrieved_docs") else "구조적 데이터"
     print(f"[generate_response] 완료 ({src})")
-    return {"answer": response.content}
+
+    # 이번 턴 Q&A를 이력에 추가
+    updated_history = history + [
+        {"role": "user",      "content": current_query},
+        {"role": "assistant", "content": response.content},
+    ]
+    return {"answer": response.content, "chat_history": updated_history}
 
 
 # ── 13. LangGraph 그래프 조립 ─────────────────────────────────────────────────
 def build_graph() -> StateGraph:
     wb = StateGraph(WorkflowState)
 
+    # resolve_query가 START 직후에 실행되어 지칭어를 해소한다
+    wb.add_node("resolve_query",     resolve_query)
     wb.add_node("classify",          classify)
     wb.add_node("classify_lot",      classify_lot)
     wb.add_node("classify_eqp",      classify_eqp)
@@ -749,7 +841,8 @@ def build_graph() -> StateGraph:
     wb.add_node("retrieve",          retrieve)
     wb.add_node("generate_response", generate_response)
 
-    wb.add_edge(START, "classify")
+    wb.add_edge(START,            "resolve_query")
+    wb.add_edge("resolve_query",  "classify")
 
     wb.add_conditional_edges("classify", route_by_group, {
         "classify_lot": "classify_lot", "classify_eqp": "classify_eqp",
@@ -771,16 +864,22 @@ def build_graph() -> StateGraph:
     wb.add_edge("retrieve",          "generate_response")
     wb.add_edge("generate_response", END)
 
-    return wb.compile()
+    # MemorySaver: thread_id 별로 state(chat_history 포함)를 인메모리에 유지
+    return wb.compile(checkpointer=MemorySaver())
 
 
 workflow_app = build_graph()
 
 
-# ── 14. 실행 헬퍼 ─────────────────────────────────────────────────────────────
-def run_workflow(query: str) -> dict:
-    print(f"\n{'='*60}\n[질문] {query}")
-    result = workflow_app.invoke({"query": query})
+# ── 14. 실행 헬퍼 ────────────────────────────────────────────────────────
+def run_workflow(query: str, thread_id: str = "default") -> dict:
+    """
+    thread_id가 같으면 이전 대화 이력이 유지된다.
+    새 대화를 시작하려면 다른 thread_id를 사용하세요.
+    """
+    config = {"configurable": {"thread_id": thread_id}}
+    print(f"\n{'='*60}\n[질문] {query}  (thread={thread_id})")
+    result = workflow_app.invoke({"query": query}, config=config)
     print(f"\n[최종 답변]\n{result.get('answer', '(없음)')}")
     return result
 
@@ -804,10 +903,17 @@ if __name__ == "__main__":
     run_tool_calling("CVD 공정에서 두께 편차가 생기는 원인이 뭐야?")
 
     print("\n" + "="*60)
-    print("  Part 2: LangGraph 방식")
+    print("  Part 2: LangGraph 방식 (단발성)")
     print("="*60)
-    run_workflow("AB123456 슬롯 정보 알려줘")
-    run_workflow("AB123456 셋모 잡혀있어?")
-    run_workflow("M15A001 지금 돌아가?")
-    run_workflow("M15 LPCVD_A 현황 알려줘")
-    run_workflow("CVD 공정에서 두께 편차 원인이 뭐야?")
+    run_workflow("AB123456 슬롯 정보 알려줘",  thread_id="t1")
+    run_workflow("AB123456 셋모 잡혀있어?",    thread_id="t2")
+    run_workflow("M15A001 지금 돌아가?",       thread_id="t3")
+    run_workflow("M15 LPCVD_A 현황 알려줘",   thread_id="t4")
+    run_workflow("CVD 공정에서 두께 편차 원인이 뭐야?", thread_id="t5")
+
+    print("\n" + "="*60)
+    print("  Part 2: Multi-turn 대화 테스트 (같은 thread_id 유지)")
+    print("="*60)
+    run_workflow("M15A001 지금 돌아가?",     thread_id="session-A")
+    run_workflow("그 장비 모델이 뭐야?",      thread_id="session-A")  # → M15A001 모델 조회
+    run_workflow("M15에 그 모델 몇 대 있어?", thread_id="session-A")  # → LPCVD_A 전체 현황
