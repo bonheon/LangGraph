@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import json
 import functools
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -349,14 +350,28 @@ def format_fab_aggregated_result(data: List[Dict], query_info: Dict) -> str:
             lines.append(f"\n*외 {len(down_list)-30}건 생략*")
     return '\n'.join(lines)
 
-def format_setmo_data(data: List[dict], lot_id: str, filter_act: str = None) -> str:
+def format_setmo_data(data: List[dict], lot_id: str, filter_act: str = None, channel: str = None) -> str:
     """SETMO 데이터 포멧팅"""
     if not data:
+        if channel == "CUBE":
+            return json.dumps({"type": "setmonitor", "lot_id": lot_id, "filter": filter_act, "items": [], "message": f"{lot_id} SETMO 정보 없음"}, ensure_ascii=False)
         return f"{lot_id} SETMO 정보 없음"
     if filter_act:
         data = [d for d in data if d.get('ACT_NM') == filter_act]
     if not data:
+        if channel == "CUBE":
+            return json.dumps({"type": "setmonitor", "lot_id": lot_id, "filter": filter_act, "items": [], "message": f"{lot_id} Setmonitoring 정보 없음"}, ensure_ascii=False)
         return f"{lot_id} Setmonitoring 정보 없음"
+
+    if channel == "CUBE":
+        if filter_act == "makeOnHold":
+            items = [{"oper_desc": d.get('OPER_DESC', '-'), "act_desc": d.get('ACT_DESC', '-'), "engr_user_nm": d.get('ENGR_USER_NM', '-')} for d in data[:20]]
+        else:
+            items = [{"oper_desc": d.get('OPER_DESC', '-'), "act_desc": d.get('ACT_DESC', '-'), "meas_slot_nm": d.get('MEAS_SLOT_NM', '-'), "engr_user_nm": d.get('ENGR_USER_NM', '-')} for d in data[:20]]
+        result = {"type": "setmonitor", "lot_id": lot_id, "filter": filter_act, "count": len(data), "items": items}
+        if len(data) > 20:
+            result["truncated"] = len(data) - 20
+        return json.dumps(result, ensure_ascii=False)
 
     if filter_act == "SetMonitor":
         title = f"##{lot_id} - Setmonitor\n"
@@ -384,8 +399,10 @@ def format_setmo_data(data: List[dict], lot_id: str, filter_act: str = None) -> 
         lines.append(f"\n*외 {len(data)-20}건 생략*")
     return '\n'.join(lines)
 
-def format_slot_data(data: List[Dict[str, Any]], lot_id: str) -> str:
+def format_slot_data(data: List[Dict[str, Any]], lot_id: str, channel: str = None) -> str:
     if not data:
+        if channel == "CUBE":
+            return json.dumps({"type": "slot_info", "lot_id": lot_id, "slots": [], "message": f"{lot_id} 슬롯 정보 없음"}, ensure_ascii=False)
         return f"{lot_id} 슬롯 정보 없음"
 
     latest_slots: Dict[int, Dict[str, Any]] = {}
@@ -404,6 +421,16 @@ def format_slot_data(data: List[Dict[str, Any]], lot_id: str) -> str:
             if event_tm > latest_slots[pos_int].get('EVENT_TM', ""):
                 latest_slots[pos_int] = d
 
+    if channel == "CUBE":
+        slots = []
+        for i in range(1, 26):
+            if i in latest_slots:
+                item = latest_slots[i]
+                slots.append({"slot": i, "wf_id": item.get('WF_ID', '-'), "oper_desc": item.get('OPER_DESC', '-'), "fab": item.get('FAB', '-'), "event_tm": str(item.get('EVENT_TM', '-'))[:19]})
+            else:
+                slots.append({"slot": i, "wf_id": None, "oper_desc": None, "fab": None, "event_tm": None})
+        return json.dumps({"type": "slot_info", "lot_id": lot_id, "slots": slots}, ensure_ascii=False)
+
     lines = [f"##{lot_id} - Slot 정보(최신 기준)\n", ""]
     lines.append(" | Slot | WF_ID | 공정 (FAB) | 시간 |")
     lines.append(" | :----: | :----- | :---------- | :-----: |")
@@ -415,8 +442,10 @@ def format_slot_data(data: List[Dict[str, Any]], lot_id: str) -> str:
             lines.append(f" | {i} | *Empty* | - | - |")
     return '\n'.join(lines)
 
-def format_lothis_data(data: List[Dict[str, Any]], lot_id: str) -> str:
+def format_lothis_data(data: List[Dict[str, Any]], lot_id: str, channel: str = None) -> str:
     if not data:
+        if channel == "CUBE":
+            return json.dumps({"type": "lot_history", "lot_id": lot_id, "items": [], "message": f"{lot_id} 이력정보 없음"}, ensure_ascii=False)
         return f"{lot_id} 이력정보 없음"
 
     try:
@@ -424,11 +453,24 @@ def format_lothis_data(data: List[Dict[str, Any]], lot_id: str) -> str:
     except Exception:
         sorted_data = data
 
-    recent_5 = sorted_data[:10]
+    recent_10 = sorted_data[:10]
+
+    if channel == "CUBE":
+        items = []
+        for idx, item in enumerate(recent_10, start=1):
+            raw_time = str(item.get('TIMEKEY', '-'))
+            if len(raw_time) >= 14 and raw_time.isdigit():
+                fmt_time = f"{raw_time[:4]}-{raw_time[4:6]}-{raw_time[6:8]} {raw_time[8:10]}:{raw_time[10:12]}:{raw_time[12:14]}"
+            else:
+                fmt_time = raw_time
+            wf_qty = item.get('WF_QTY')
+            items.append({"seq": idx, "timekey": fmt_time, "event_cd": item.get('EVENT_CD') or '-', "oper_id": item.get('OPER_ID') or '-', "ctn_desc": item.get('CTN_DESC') or '-', "wf_qty": wf_qty, "prod_id": item.get('PROD_ID') or '-'})
+        return json.dumps({"type": "lot_history", "lot_id": lot_id, "count": len(sorted_data), "items": items}, ensure_ascii=False)
+
     lines = [f"##{lot_id} - 이력정보 (최근 10건)\n", ""]
     lines.append(" | 순번 | 시간(timekey) | 이벤트(event_cd) | 공정 ID (OPER_ID) | 공정명 (CTN_DESC) | 수량 (WF_QTY) | 제품 ID(PROD_ID) |")
     lines.append("| :----: | :-------------: | :--------------------: | :----------------------: | :--------------------------------: | :------------------------------: | :-----------------: |")
-    for idx, item in enumerate(recent_5, start=1):
+    for idx, item in enumerate(recent_10, start=1):
         raw_time = str(item.get('TIMEKEY', '-'))
         if len(raw_time) >= 14 and raw_time.isdigit():
             formatted_time = f"{raw_time[:4]}-{raw_time[4:6]}-{raw_time[6:8]} {raw_time[8:10]}:{raw_time[10:12]}:{raw_time[12:14]}"
@@ -517,7 +559,23 @@ def analyze_eqp_data(data: List[Dict], eqp_id: str) -> Dict[str, Any]:
         "port_list": port_list
     }
 
-def format_eqp_info_table(analyzed: Dict, show_chamber: bool = True, show_port: bool = True) -> str:
+def format_eqp_info_table(analyzed: Dict, show_chamber: bool = True, show_port: bool = True, channel: str = None) -> str:
+    if channel == "CUBE":
+        result = {
+            "type": "eqp_info",
+            "eqp_id": analyzed.get('EQP_ID', '-'),
+            "eq_group": analyzed.get('EQ_GROUP', '-'),
+            "mes_stat_typ": analyzed.get('MES_STAT_TYP', '-'),
+            "eqp_stat_cd": analyzed.get('EQP_STAT_CD', '-'),
+            "chamber_count": analyzed.get('CHAMBER 수', 0),
+            "down_count": analyzed.get('DOWN 수', 0),
+        }
+        if show_chamber and analyzed.get("chamber_details"):
+            result["chambers"] = [{"eqp_id": ch.get('EQP_ID', '-'), "mes_stat_typ": ch.get('MES_STAT_TYP', '-'), "eqp_stat_cd": ch.get('EQP_STAT_CD', '-'), "last_event_tm": ch.get('LAST_EVENT_TM', '-')} for ch in sorted(analyzed["chamber_details"], key=lambda x: x.get('EQP_ID') or '')]
+        if show_port and analyzed.get("port_list"):
+            result["ports"] = [{"port": p['port'], "transfer": p['transfer'], "status": p['status']} for p in analyzed["port_list"]]
+        return json.dumps(result, ensure_ascii=False)
+
     lines = ["## 장비 상태 \n"]
     lines.append(" | 항목 | 값 |")
     lines.append(" | ------ | ----- |")
@@ -541,7 +599,23 @@ def format_eqp_info_table(analyzed: Dict, show_chamber: bool = True, show_port: 
             lines.append(f"| {p['port']} | {p['transfer']} | {p['status']} |")
     return '\n'.join(lines)
 
-def format_eqp_status_table(analyzed: Dict, show_chamber: bool = True, show_port: bool = True) -> str:
+def format_eqp_status_table(analyzed: Dict, show_chamber: bool = True, show_port: bool = True, channel: str = None) -> str:
+    if channel == "CUBE":
+        result = {
+            "type": "eqp_status",
+            "eqp_id": analyzed.get('EQP_ID', '-'),
+            "eq_group": analyzed.get('EQ_GROUP', '-'),
+            "mes_stat_typ": analyzed.get('MES_STAT_TYP', '-'),
+            "eqp_stat_cd": analyzed.get('EQP_STAT_CD', '-'),
+            "chamber_count": analyzed.get('CHAMBER 수', 0),
+            "down_count": analyzed.get('DOWN 수', 0),
+        }
+        if show_chamber and analyzed.get("chamber_details"):
+            result["chambers"] = [{"eqp_id": ch.get('EQP_ID', '-'), "mes_stat_typ": ch.get('MES_STAT_TYP', '-'), "eqp_stat_cd": ch.get('EQP_STAT_CD', '-'), "last_event_tm": ch.get('LAST_EVENT_TM', '-')} for ch in sorted(analyzed["chamber_details"], key=lambda x: x.get('EQP_ID') or '')]
+        if show_port and analyzed.get("port_list"):
+            result["ports"] = [{"port": p['port'], "transfer": p['transfer'], "status": p['status']} for p in analyzed["port_list"]]
+        return json.dumps(result, ensure_ascii=False)
+
     lines = ["## 장비 상태\n"]
     lines.append("| 항목 | 값 |")
     lines.append("| ----- | ----- |")
@@ -565,7 +639,7 @@ def format_eqp_status_table(analyzed: Dict, show_chamber: bool = True, show_port
             lines.append(f"| {p['port']} | {p['transfer']} | {p['status']} |")
     return '\n'.join(lines)
 
-def format_fab_model_result(data: List[Dict], query_info: Dict, query: str) -> str:
+def format_fab_model_result(data: List[Dict], query_info: Dict, query: str, channel: str = None) -> str:
     from collections import defaultdict
     fab = query_info["fab"]
     chamber_only = query_info.get("chamber_only", False)
@@ -578,6 +652,40 @@ def format_fab_model_result(data: List[Dict], query_info: Dict, query: str) -> s
 
     if chamber_only:
         main_eqp = []
+
+    if channel == "CUBE":
+        models_stat: Dict = defaultdict(lambda: {"total": 0, "up": 0, "down": 0})
+        groups_stat: Dict = defaultdict(lambda: {"total": 0, "up": 0, "down": 0})
+        target_list = chamber_eqp if chamber_only else main_eqp
+        for e in target_list:
+            m = e.get("EQP_MODEL_CD", "Unknown")
+            g = e.get("EQ_GROUP", "Unknown")
+            stat = e.get("MES_STAT_TYP")
+            models_stat[m]["total"] += 1
+            groups_stat[g]["total"] += 1
+            if stat == "Up":
+                models_stat[m]["up"] += 1
+                groups_stat[g]["up"] += 1
+            else:
+                models_stat[m]["down"] += 1
+                groups_stat[g]["down"] += 1
+        ch_total = len(chamber_eqp)
+        ch_down = sum(1 for d in chamber_eqp if d.get("MES_STAT_TYP") == "Down")
+        down_list = [{"eqp_id": e.get('EQP_ID', '-'), "eqp_stat_cd": e.get('EQP_STAT_CD', '-'), "last_event_tm": e.get('LAST_EVENT_TM', '-')} for e in main_eqp if e.get("MES_STAT_TYP") == "Down"][:10]
+        result = {
+            "type": "fab_model",
+            "fab": fab,
+            "query": query,
+            "chamber_only": chamber_only,
+            "main_total": len(main_eqp),
+            "chamber_total": ch_total,
+            "chamber_down": ch_down,
+            "models": [{"model": k, **v} for k, v in sorted(models_stat.items())],
+            "groups": [{"group": k, **v} for k, v in sorted(groups_stat.items())],
+        }
+        if down_list:
+            result["down_equipment"] = down_list
+        return json.dumps(result, ensure_ascii=False)
 
     if chamber_only and not group_by:
         all_chambers = chamber_eqp
@@ -674,7 +782,7 @@ def get_operhis_data(ctn_desc: str, lot_cd: Optional[str] = None, prev: bool = F
     else:
         return sorted(ctn_items, key=lambda x: x.get("OPERLEVEL", 0), reverse=True)[:limit]
 
-def format_operhis_data(data: List[Dict], ctn_desc: str) -> str:
+def format_operhis_data(data: List[Dict], ctn_desc: str, channel: str = None) -> str:
     from collections import defaultdict
     lot_groups = defaultdict(list)
     for item in data:
@@ -685,6 +793,13 @@ def format_operhis_data(data: List[Dict], ctn_desc: str) -> str:
         [max(items, key=lambda x: x.get("OPERLEVEL", 0)) for items in lot_groups.values()],
         key=lambda x: x.get("OPERLEVEL", 0), reverse=True
     )[:10]
+
+    if channel == "CUBE":
+        items = [{"lot_id": item.get('LOT_ID', '-'), "wf_qty": item.get('WF_QTY', '-'), "ctn_desc": item.get('CTN_DESC', '-'), "mes_proc_stat_cd": item.get('MES_PROC_STAT_CD', '-'), "last_event_tm": item.get('LAST_EVENT_TM', '-'), "flow_id": item.get('FLOW_ID', '-')} for item in selected]
+        result = {"type": "oper_history", "ctn_desc": ctn_desc, "total_lots": len(lot_groups), "items": items}
+        if len(lot_groups) > 10:
+            result["truncated"] = len(lot_groups) - 10
+        return json.dumps(result, ensure_ascii=False)
 
     lines = [f"##{ctn_desc} 공정 이력\n", "",
              "| LOT_ID | WF_QTY | CTN_DESC | MES_PROC_STAT_CD | LAST_EVENT_TM | FLOW_ID |",
@@ -901,9 +1016,10 @@ def route_eqp_intent(state: GraphState) -> str:
 
 def fetch_lot_setmo(state: GraphState) -> GraphState:
     """LOT SetMonitor 데이터 조회 및 포맷"""
+    channel = getattr(state, 'channel', None)
     data = call_setmo_check(state.lot_id)
     if data and any(d.get('ACT_NM') == 'Monitor' for d in data):
-        state.answer = format_setmo_data(data, state.lot_id, "Monitor")
+        state.answer = format_setmo_data(data, state.lot_id, "Monitor", channel=channel)
     else:
         state.answer = f"{state.lot_id} setmonitor 데이터 없음"
     state.skip_rag = True
@@ -913,9 +1029,10 @@ def fetch_lot_setmo(state: GraphState) -> GraphState:
 
 def fetch_lot_future_hold(state: GraphState) -> GraphState:
     """LOT Future Hold 데이터 조회 및 포맷"""
+    channel = getattr(state, 'channel', None)
     data = call_setmo_check(state.lot_id)
     if data and any(d.get('ACT_NM') == 'makeOnHold' for d in data):
-        state.answer = format_setmo_data(data, state.lot_id, "makeOnHold")
+        state.answer = format_setmo_data(data, state.lot_id, "makeOnHold", channel=channel)
     else:
         state.answer = f"{state.lot_id} Future Hold 데이터 없음"
     state.skip_rag = True
@@ -925,8 +1042,9 @@ def fetch_lot_future_hold(state: GraphState) -> GraphState:
 
 def fetch_lot_slot(state: GraphState) -> GraphState:
     """LOT 슬롯 정보 조회 및 포맷"""
+    channel = getattr(state, 'channel', None)
     data = call_slot_info(state.lot_id)
-    state.answer = format_slot_data(data, state.lot_id) if data else f"{state.lot_id} 슬롯 정보 없음"
+    state.answer = format_slot_data(data, state.lot_id, channel=channel) if data else f"{state.lot_id} 슬롯 정보 없음"
     state.skip_rag = True
     print(f"[DEBUG] 응답 완료 (skip_rag=True)")
     return state
@@ -934,8 +1052,9 @@ def fetch_lot_slot(state: GraphState) -> GraphState:
 
 def fetch_lot_history(state: GraphState) -> GraphState:
     """LOT 이력 조회 및 포맷"""
+    channel = getattr(state, 'channel', None)
     data = call_lothis(state.lot_id)
-    state.answer = format_lothis_data(data, state.lot_id) if data else f"{state.lot_id} 이력 정보 없음"
+    state.answer = format_lothis_data(data, state.lot_id, channel=channel) if data else f"{state.lot_id} 이력 정보 없음"
     state.skip_rag = True
     print(f"[DEBUG] 응답완료 (skip_rag=True)")
     return state
@@ -947,8 +1066,9 @@ def fetch_lot_history(state: GraphState) -> GraphState:
 
 def fetch_eqp_info(state: GraphState) -> GraphState:
     """장비 정보 분석 및 포맷"""
+    channel = getattr(state, 'channel', None)
     analyzed = analyze_eqp_data(state.eqp_data, state.eqp_id)
-    state.answer = format_eqp_info_table(analyzed)
+    state.answer = format_eqp_info_table(analyzed, channel=channel)
     state.skip_rag = True
     print(f"[DEBUG] 응답 완료 (skip_rag=True)")
     return state
@@ -956,9 +1076,10 @@ def fetch_eqp_info(state: GraphState) -> GraphState:
 
 def fetch_eqp_status(state: GraphState) -> GraphState:
     """장비 상태 분석 및 포맷"""
+    channel = getattr(state, 'channel', None)
     is_cmp = any("CMP" in str(d.get("MGMT_AREA_ID", "")).upper() for d in state.eqp_data)
     analyzed = analyze_eqp_data(state.eqp_data, state.eqp_id)
-    state.answer = format_eqp_status_table(analyzed, show_chamber=not is_cmp, show_port=True)
+    state.answer = format_eqp_status_table(analyzed, show_chamber=not is_cmp, show_port=True, channel=channel)
     state.skip_rag = True
     print(f"[DEBUG] 응답 완료 (skip_rag=True)")
     return state
@@ -991,6 +1112,7 @@ def fetch_fab_model(state: GraphState) -> GraphState:
     }
     filtered_data = apply_filters(raw_data, query_info)
 
+    channel = getattr(state, 'channel', None)
     if not filtered_data:
         conditions = []
         if state.fab_model:      conditions.append(f"모델:{state.fab_model}")
@@ -999,7 +1121,7 @@ def fetch_fab_model(state: GraphState) -> GraphState:
         state.answer = f"{fab} 펩에서 {', '.join(conditions)} 조건에 맞는 장비를 찾을 수 없습니다."
     else:
         filtered_data.sort(key=lambda x: x.get('EQP_ID', ''))
-        state.answer = format_fab_model_result(filtered_data, query_info, state.query)
+        state.answer = format_fab_model_result(filtered_data, query_info, state.query, channel=channel)
 
     state.sql_result = raw_data
     state.skip_rag = True
@@ -1013,6 +1135,7 @@ def fetch_fab_model(state: GraphState) -> GraphState:
 
 def fetch_oper_step(state: GraphState) -> GraphState:
     """공정 단계 이력 조회 및 포맷"""
+    channel = getattr(state, 'channel', None)
     oper_data = get_operhis_data(
         ctn_desc=state.parsed_ctn_desc,
         lot_cd=state.parsed_lot_cd,
@@ -1020,7 +1143,7 @@ def fetch_oper_step(state: GraphState) -> GraphState:
     )
     if oper_data:
         print(f"[DEBUG] OPER_STEP 데이터 확인됨: {len(oper_data)}건")
-        state.answer = format_operhis_data(oper_data, state.parsed_ctn_desc)
+        state.answer = format_operhis_data(oper_data, state.parsed_ctn_desc, channel=channel)
     else:
         print(f"[DEBUG] 조건에 맞는 데이터 없음")
         state.answer = f"'{state.parsed_ctn_desc}' 공정 데이터 없음"
